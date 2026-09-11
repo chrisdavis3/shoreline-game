@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT } from './terrain.js?v=24';
-import { Noise2D } from './noise.js?v=24';
+import { GRID, CELL, SIZE, coastT } from './terrain.js?v=32';
+import { Noise2D } from './noise.js?v=32';
 
 const decoNoise = new Noise2D(555);
 
@@ -384,9 +384,17 @@ export function buildSkirt(terrain) {
 
   const pos = geo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
-  const grass = new THREE.Color('#5e6b48');
-  const farHill = new THREE.Color('#7c8d84');
-  const cliff = new THREE.Color('#6b6660');
+  // This surround is what's actually visible flanking the beach at any real
+  // distance, so it needs to read as the SAME coastline the real terrain
+  // does (dark, strata-banded slate, grass only right at the top) rather than
+  // a flat green wall - a real Cornish headland doesn't turn into a green
+  // hillside a few metres past the sand, it keeps being cliff for a long way.
+  const rockDark = new THREE.Color('#241f1a');
+  const rockMid = new THREE.Color('#57503f');
+  const rockLight = new THREE.Color('#877c6a');
+  const grassPatch = new THREE.Color('#5e6b48');
+  const farHill = new THREE.Color('#7c8d84'); // distant hills, hazed by atmospheric perspective
+  const tmpC = new THREE.Color();
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
@@ -414,9 +422,24 @@ export function buildSkirt(terrain) {
     }
     pos.setY(i, y);
 
-    const t = THREE.MathUtils.clamp(outside / (SIZE * 1.1), 0, 1);
-    const c = grass.clone().lerp(farHill, t).lerp(cliff, Math.max(0, Math.min(1, (y - 30) / 20)));
-    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+    const distT = THREE.MathUtils.clamp(outside / (SIZE * 1.1), 0, 1);
+    // Diagonal strata, same technique as the real cliff face: mixing x into the
+    // phase alongside height tilts the bands into sloped strata instead of
+    // horizontal rings.
+    const strataPhase = x * 0.3 + y * 2.4;
+    const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+    const fineStrata = Math.sin(strataPhase * 2.6 + 1.1) * 0.5 + 0.5;
+    tmpC.copy(rockMid).lerp(rockLight, THREE.MathUtils.clamp(y / 55, 0, 1) * 0.7);
+    tmpC.lerp(rockDark, strata * 0.3 + fineStrata * 0.13);
+    // Grass only right at the very top of the rise, in noise-patches (not a
+    // uniform cap) - most of the visible height stays bare rock.
+    const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
+    const grassAmount = THREE.MathUtils.clamp((y - 34) / 14, 0, 1)
+      * THREE.MathUtils.clamp((grassPatchNoise - 0.15) * 2.2, 0, 1);
+    tmpC.lerp(grassPatch, grassAmount * 0.8);
+    // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.
+    tmpC.lerp(farHill, distT * distT * 0.55);
+    colors[i * 3] = tmpC.r; colors[i * 3 + 1] = tmpC.g; colors[i * 3 + 2] = tmpC.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();

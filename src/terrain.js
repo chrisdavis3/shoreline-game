@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=24';
+import { Noise2D } from './noise.js?v=32';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -15,49 +15,48 @@ const n3 = new Noise2D(4242);
 
 function idx(i, j) { return j * GRID + i; }
 
-// Stream centreline: a gentle meander from the dunes down to the sea.
+// Stream centreline: a gentle meander from the dunes down to the sea. Enters
+// toward the southern end of the beach (low i), matching the real River
+// Menalhyl, which meanders along Mawgan Porth's southern edge rather than
+// down the middle.
 function streamCenterX(z) {
   const t = z / SIZE;
-  return SIZE * 0.72 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
+  return SIZE * 0.22 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
 }
 
-// The coastline's t-threshold (0..1, inland->sea) as a function of column i - a
-// real bay silhouette, not a straight line: two low-frequency octaves carve
-// genuine coves and headland points tens of metres across (comparable in scale
-// to Mawgan Porth's own bay). This is the SINGLE source of truth for where
-// "land" ends and "sea" begins at this column - the water sim's tide zone and
-// erosion cutoff both call this too, so the simulation's idea of the coastline
-// always matches what's actually rendered, instead of a flat cutoff that would
-// flood a cove early or starve a headland point of its own tide/erosion.
-// The bay's large-scale shape (no local noise yet): wide and gentle, staying
-// deep across most of the map's width and only closing up near the very
-// edges - a real "wide embayed beach" curve (Mawgan Porth's own description),
-// not a tight semicircle. cos() gives a flat top (zero slope at the centre)
-// and a bounded, gentle slope even at its steepest (the very edges) - unlike
-// a fixed-position cliff mask, this is what actually makes the level's OWN
-// outer footprint curve into a rounded bay instead of running out to a
-// rectangle: the headland cliffs below are derived from this same curve,
-// closing in wherever it has, rather than sitting at two fixed x positions.
-function bayBaseCoast(i) {
-  const centered = THREE.MathUtils.clamp((i / GRID - 0.5) * 2, -1, 1); // -1..1
-  const bayCurve = Math.cos(centered * Math.PI * 0.42);
-  return 0.30 + bayCurve * 0.42; // ~0.30 at the edges, ~0.72 at the centre
-}
+// The coastline's t-threshold (0..1, inland->sea) as a function of column i -
+// traced directly from OpenStreetMap's actual "Dunes" beach polygon at Mawgan
+// Porth (queried via the Overpass API: way 399625654, natural=beach, 63
+// vertices), not a procedural formula. For each of the 140 columns this is
+// the real seaward (westmost) edge of that polygon at the matching
+// north-south position, projected to local metres, then linearly rescaled so
+// the polygon's full north-south extent (~564m) maps across the level's
+// width and its seaward swing maps to a 0.32-0.82 depth range. Light
+// smoothing (a ~17-sample moving average over the raw traced points) keeps
+// the per-column slope gentle - the raw trace had real jumps of ~25 grid
+// cells between adjacent columns (small real features that are only a few
+// metres across in reality, compressed into single columns here), which
+// rendered as a sawtooth rather than a coastline at this map's scale.
+// i=0 is the southern end of the real beach, i=GRID-1 the northern end.
+const REAL_COAST_T = [
+  0.4350, 0.4421, 0.4490, 0.4559, 0.4627, 0.4695, 0.4762, 0.4829, 0.4896, 0.5050,
+  0.5183, 0.5308, 0.5421, 0.5513, 0.5559, 0.5490, 0.5399, 0.5305, 0.5217, 0.5138,
+  0.5068, 0.5001, 0.4929, 0.4852, 0.4770, 0.4684, 0.4592, 0.4496, 0.4401, 0.4310,
+  0.4235, 0.4199, 0.4271, 0.4361, 0.4446, 0.4532, 0.4689, 0.4849, 0.5009, 0.5176,
+  0.5349, 0.5524, 0.5699, 0.5874, 0.6050, 0.6226, 0.6403, 0.6582, 0.6762, 0.6944,
+  0.7128, 0.7312, 0.7486, 0.7575, 0.7648, 0.7711, 0.7764, 0.7811, 0.7853, 0.7893,
+  0.7930, 0.7966, 0.7998, 0.8029, 0.8057, 0.8082, 0.8103, 0.8119, 0.8130, 0.8137,
+  0.8139, 0.8137, 0.8132, 0.8125, 0.8116, 0.8104, 0.8090, 0.8072, 0.8052, 0.8030,
+  0.8004, 0.7976, 0.7946, 0.7916, 0.7884, 0.7853, 0.7820, 0.7784, 0.7747, 0.7707,
+  0.7664, 0.7617, 0.7565, 0.7509, 0.7450, 0.7386, 0.7318, 0.7246, 0.7170, 0.7092,
+  0.7012, 0.6931, 0.6849, 0.6766, 0.6684, 0.6599, 0.6512, 0.6420, 0.6327, 0.6232,
+  0.6135, 0.6038, 0.5942, 0.5846, 0.5752, 0.5658, 0.5564, 0.5478, 0.5400, 0.5329,
+  0.5271, 0.5232, 0.5211, 0.5202, 0.5204, 0.5217, 0.5239, 0.5270, 0.5310, 0.5358,
+  0.5412, 0.5472, 0.5511, 0.5561, 0.5613, 0.5667, 0.5725, 0.5778, 0.5816, 0.5839,
+];
 
 export function coastT(i) {
-  // The real constraint here isn't amplitude or frequency alone, it's their
-  // PRODUCT: that sets how fast the coastline shifts sideways in z per single
-  // column of x. Get that too high and the line looks jagged/zigzagged from
-  // ANY camera angle or transition width, no matter how the vertical land/sea
-  // blend is tuned - confirmed by direct measurement (an earlier version's
-  // coastline shifted over 10 grid cells of z across just 3-4 columns of x,
-  // close to a 45-degree diagonal at its steepest, which reads as a sawtooth
-  // rather than a curve). Tuned so each octave's own amp*freq stays small
-  // enough for a smooth, gently curving bay - still ~1 cycle plus a secondary
-  // wave, at a real, visible scale (tens of metres), just not a fast zigzag.
-  const bigCove = n3.fbm(i * 0.09 + 200, 0, 1);
-  const medCove = n3.fbm(i * 0.20 + 600, 0, 1);
-  return bayBaseCoast(i) + bigCove * 0.07 + medCove * 0.03;
+  return REAL_COAST_T[THREE.MathUtils.clamp(Math.round(i), 0, GRID - 1)];
 }
 
 export class Terrain {
@@ -116,19 +115,16 @@ export class Terrain {
         hLand += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
         hLand += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
 
-        // Rocky headland cliffs closing both sides of the bay (like Mawgan Porth's
-        // Berryl's Point and Trenance Point): earlier this was two straight cliff
-        // strips at fixed x positions, which is exactly why the level's overall
-        // footprint still read as a rectangle with a wavy front edge, not an
-        // actual rounded bay - the cliffs never curved inward with the coastline,
-        // they just sat there regardless of it. Deriving headland strength from
-        // the SAME bay curve instead means the cliffs close in wherever the bay
-        // itself has closed in: no cliff at the centre (the bay's at its widest),
-        // rising toward full cliff at the edges (the bay's fully closed there).
-        // Only actually renders as cliff past the dune line in z - inland of that
-        // it's ordinary dunes no matter which column.
-        const baseCoast = bayBaseCoast(i);
-        const cliffPotential = THREE.MathUtils.clamp(1 - (baseCoast - 0.30) / 0.42, 0, 1);
+        // Rocky headlands: Berryl's Point at the southern end (i=0) and Trenance
+        // Point at the northern end (i=GRID-1) - the real rock formations that
+        // flank the traced beach polygon at its two ends. An exponent above 1
+        // keeps the derivative bounded near the edge (the earlier exponent-below-1
+        // version jumped straight to ~40% mask height in its very first active
+        // cell, a visible seam - see the fix history). Only actually renders as
+        // cliff past the dune line in z - inland of that it's ordinary dunes.
+        const edgeDist = Math.min(i, GRID - 1 - i); // cells from the nearest real end
+        const cliffWidthCells = 24; // wide enough to read as a real headland; wider than this reopened the seam-at-the-edge issue
+        const cliffPotential = Math.pow(THREE.MathUtils.clamp(1 - edgeDist / cliffWidthCells, 0, 1), 1.6);
         const cliffOnset = THREE.MathUtils.clamp((t - 0.28) / 0.16, 0, 1);
         const headland = cliffPotential * cliffOnset;
         hLand += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
@@ -162,8 +158,22 @@ export class Terrain {
         // adjacent columns' drop-off points differ by a few metres (that's the
         // whole point - it's what makes the coves and points) and a steep,
         // narrow transition turns that natural difference into a visible ridge.
+        // A MODERATE headland value (e.g. 0.4, just past the cliff's own outer
+        // edge) was still suppressing the sea blend by a third, and because that
+        // suppression sits right at the blend's own sensitive transition zone, a
+        // small per-column change in headland was enough to snap the actual
+        // land/sea crossing point by dozens of cells - a visible seam right past
+        // every headland's edge (tried squaring headland here first - it only
+        // moved the same problem to a different column, since values near 1
+        // barely change under squaring while the ramp-up compresses). A smoothstep
+        // GATE instead means only a genuinely strong, deep-into-the-cliff
+        // headland (>0.5, ramping to full by 0.9) suppresses the blend at all;
+        // moderate values right at the cliff's outer edge get zero suppression,
+        // so the sea blend there behaves exactly like open coastline - no snap.
         const seaEdgeWidth = 0.16;
-        const edge = THREE.MathUtils.clamp((t - coastline) / seaEdgeWidth, 0, 1) * (1 - headland * 0.85);
+        const protT = THREE.MathUtils.clamp((headland - 0.5) / 0.4, 0, 1);
+        const seaProtection = protT * protT * (3 - 2 * protT); // smoothstep, written out (no MathUtils dependency)
+        const edge = THREE.MathUtils.clamp((t - coastline) / seaEdgeWidth, 0, 1) * (1 - seaProtection * 0.85);
         const seaDepth = -2.2 - Math.max(0, t - coastline) * 2.2;
         let h = hLand * (1 - edge) + seaDepth * edge;
 
@@ -288,8 +298,13 @@ export class Terrain {
     const mud = new THREE.Color('#4f4636'); // dark, saturated mud right at the immediate waterline
     const grass = new THREE.Color('#71805a');
     const dryGrass = new THREE.Color('#95935f');
-    const rock = new THREE.Color('#7a7570');
-    const darkRock = new THREE.Color('#57534d');
+    // Real Cornish cliffs (slate/shale) are much darker and more dramatic than a
+    // flat mid-grey: near-black in the sheltered lower rock, a warmer bleached
+    // grey-tan higher up where it's exposed to sun and salt, with dark banded
+    // strata running through both - not a uniform "rock" colour at all.
+    const rockDark = new THREE.Color('#241f1a');
+    const rockMid = new THREE.Color('#5a5346');
+    const rockLight = new THREE.Color('#8c8170');
     const turnedSand = new THREE.Color('#7c6142'); // freshly dug/piled sand - richer, darker, "just turned"
     const tmp = new THREE.Color();
 
@@ -310,19 +325,39 @@ export class Terrain {
         let base = sand.clone().lerp(grass, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
         base.lerp(dryGrass, 0.15 * Math.max(0, 1 - t * 3));
 
-        // Clifftop plateau: flat high ground reads as grass regardless of where it
-        // sits along the beach - only the steep cliff face itself exposes bare rock.
+        // Clifftop plateau: flat high ground can carry grass, but only in patches
+        // (real clifftop grass clings to ledges and pockets of soil, it doesn't
+        // blanket the whole rock uniformly) - gated by its own noise so most of
+        // the flat high ground still reads as bare rock, with grass tufts only
+        // where the patch noise says there's actually soil.
+        const grassPatch = THREE.MathUtils.clamp((n1.fbm(i * 0.15 + 300, j * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
         const clifftopGrass = THREE.MathUtils.clamp((this.height[k] - 4.5) / 3.5, 0, 1)
-          * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1);
+          * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1) * grassPatch;
         base.lerp(grass, clifftopGrass * 0.85);
 
+        // Rock goes from a warm, sun-bleached grey-tan high on the cliff down to
+        // near-black in the sheltered lower rock - real slate is never one flat
+        // rock colour. Height alone (relative to the local rock's own base, not
+        // an absolute number) drives that gradient.
         const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1);
-        base.lerp(rock, rockExposure);
-        base.lerp(darkRock, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1));
-        if (rockExposure > 0.25) {
-          const strata = Math.sin(this.height[k] * 2.4) * 0.5 + 0.5;
-          base.lerp(darkRock, strata * 0.22 * rockExposure);
+        const rockHeightT = THREE.MathUtils.clamp((this.height[k] - 2) / 9, 0, 1);
+        const rockTone = rockMid.clone().lerp(rockLight, rockHeightT * 0.8).lerp(rockDark, (1 - rockHeightT) * 0.5);
+        base.lerp(rockTone, rockExposure);
+        // Strata: real slate's bedding lines run at a steep diagonal across the
+        // WHOLE cliff face, not stacked flat like pancakes - mixing world x into
+        // the phase alongside height (instead of height alone) tilts the bands so
+        // they read as sloped strata sweeping across the rock, the way the
+        // reference photo's cliff actually looks, rather than horizontal rings.
+        if (rockExposure > 0.2) {
+          const strataPhase = i * CELL * 0.32 + this.height[k] * 2.6;
+          const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+          base.lerp(rockDark, strata * 0.32 * rockExposure);
+          // A second, finer band on top breaks up any residual flatness/banding
+          // regularity - real strata isn't perfectly periodic.
+          const fineStrata = Math.sin(strataPhase * 2.7 + 1.4) * 0.5 + 0.5;
+          base.lerp(rockDark, fineStrata * 0.14 * rockExposure);
         }
+        base.lerp(rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.7);
         // A single linear wet->sand blend reads as one flat "damp" tone everywhere
         // water has ever been. Real banks are muddier the closer they sit to the
         // water's edge right now - so bias a second, darker mud tone toward only
