@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=8';
+import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=21';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -10,7 +10,12 @@ const N = GRID;
 const CELL_AREA = CELL * CELL;
 const G = 9.8;
 const PIPE_LEN = CELL;
-const SEA_ROW_T = 0.60; // fraction of SIZE where the "open sea" relaxation zone begins
+// Average fallback used only by the shader's cosmetic surf-crest timing (porting
+// the coastline's noise into GLSL isn't worth it for a purely visual effect) -
+// every FUNCTIONAL sea-zone check below uses the real per-column coastT(i)
+// instead, so the sim's idea of "where the sea starts" actually matches the
+// rendered coastline's coves and points rather than a flat cutoff.
+const SEA_ROW_T = 0.60;
 
 function idx(i, j) { return j * N + i; }
 
@@ -33,6 +38,11 @@ export class WaterSim {
     this.tidePhase = Math.random() * Math.PI * 2;
     this.tidePeriod = 260; // seconds for a full tidal cycle - slow enough to notice, fast enough to see in one session
     this.tideRange = 1.9;  // metres of vertical rise/fall
+
+    // Per-column coastline threshold, precomputed once - every functional sea-zone
+    // check below reads this instead of recomputing the noise or using a flat cutoff.
+    this._coastT = new Float32Array(N);
+    for (let i = 0; i < N; i++) this._coastT[i] = coastT(i);
 
     this._seedSource();
     this._seedChannel(terrain);
@@ -67,8 +77,9 @@ export class WaterSim {
     for (let j = 0; j < N; j++) {
       const z = j * CELL;
       const t = z / SIZE;
-      if (t > SEA_ROW_T) break; // the sea zone fills itself via tide relaxation
       const ci = streamCenterX(z) / CELL;
+      const channelCoastT = this._coastT[Math.round(THREE.MathUtils.clamp(ci, 0, N - 1))];
+      if (t > channelCoastT) break; // the sea zone fills itself via tide relaxation
       const width = 2.4 + 2.4 * t;
       const i0 = Math.max(0, Math.floor(ci - width * 1.6));
       const i1 = Math.min(N - 1, Math.ceil(ci + width * 1.6));
@@ -98,6 +109,18 @@ export class WaterSim {
     this.flowDirAttr = new THREE.BufferAttribute(new Float32Array(N * N * 2), 2);
     this.geometry.setAttribute('aFlowDir', this.flowDirAttr);
 
+    // The surf/wave-crest effect below needs to know where the REAL (per-column,
+    // irregular) coastline is, not a flat cutoff - otherwise the breaking-wave
+    // line shows up at the wrong depth in every cove and point, as a comb of
+    // bumps in the wrong place rather than tracking the actual shore. This is a
+    // constant per column, so it's set once here rather than every frame.
+    const coastZArr = new Float32Array(N * N);
+    for (let i = 0; i < N; i++) {
+      const z = this._coastT[i] * SIZE;
+      for (let j = 0; j < N; j++) coastZArr[idx(i, j)] = z;
+    }
+    this.geometry.setAttribute('aCoastZ', new THREE.BufferAttribute(coastZArr, 1));
+
     this.uniforms = {
       uTime: { value: 0 },
       uTideLevel: { value: this.tideLevel },
@@ -114,6 +137,7 @@ export class WaterSim {
         attribute float aDepth;
         attribute float aFlow;
         attribute vec2 aFlowDir;
+        attribute float aCoastZ;
         varying float vDepth;
         varying float vFlow;
         varying vec2 vFlowDir;
@@ -130,7 +154,11 @@ export class WaterSim {
           pos.y += (aDepth > 0.002) ? ripple * min(1.0, aDepth * 4.0) : 0.0;
           // Surf: wave crests travel toward shore (-z) and rear up as the water shoals,
           // giving the breaking-wave line a slight rolling bump right where it foams.
-          float shoreZone = smoothstep(${(SEA_ROW_T * SIZE - 10.0).toFixed(1)}, ${(SIZE).toFixed(1)}, pos.z);
+          // Anchored to aCoastZ (this column's REAL coastline, not a flat cutoff) -
+          // the coastline now varies by tens of metres between coves and points, so
+          // a fixed z-threshold put the whole surf effect at the wrong depth almost
+          // everywhere, showing up as a comb of bumps on dry sand in every cove.
+          float shoreZone = smoothstep(aCoastZ - 10.0, aCoastZ + ${(SIZE * (1 - SEA_ROW_T)).toFixed(1)}, pos.z);
           float wavePhase = fract((pos.z - uTime * 5.5) / 7.5);
           float crest = pow(max(0.0, sin(wavePhase * 6.28318)), 5.0);
           pos.y += crest * shoreZone * 0.16 * min(1.0, aDepth * 6.0);
@@ -265,13 +293,17 @@ export class WaterSim {
       }
     }
 
-    // Sea coupling: relax cells in the open-sea zone toward the tide level.
+    // Sea coupling: relax cells in the open-sea zone toward the tide level. Each
+    // column has its own coastline threshold (a cove's sea starts sooner, a
+    // point's later), so this checks per-cell rather than a single shared row.
+    const coastCol = this._coastT;
     for (let j = 0; j < N; j++) {
       const t = (j * CELL) / SIZE;
-      if (t < SEA_ROW_T) continue;
-      const zoneT = (t - SEA_ROW_T) / (1 - SEA_ROW_T);
-      const strength = THREE.MathUtils.clamp(0.06 + zoneT * 0.5, 0.06, 0.6);
       for (let i = 0; i < N; i++) {
+        const colT = coastCol[i];
+        if (t < colT) continue;
+        const zoneT = THREE.MathUtils.clamp((t - colT) / Math.max(0.05, 1 - colT), 0, 1);
+        const strength = THREE.MathUtils.clamp(0.06 + zoneT * 0.5, 0.06, 0.6);
         const k = idx(i, j);
         const target = Math.max(0, tide - h[k]);
         depth[k] += (target - depth[k]) * Math.min(1, strength * dt * 6);
@@ -373,9 +405,12 @@ export class WaterSim {
     const Kd = 0.55;     // deposition rate
     const MAX_RATE = 0.045; // hard ceiling on height change per second - keeps erosion a slow, minutes-scale process
 
-    const erodeRows = Math.floor((SEA_ROW_T * SIZE) / CELL); // no erosion out in the open-sea relaxation zone
-    for (let j = 1; j < Math.min(N - 1, erodeRows); j++) {
+    // No erosion out in each column's own open-sea relaxation zone (a cove's sea
+    // starts sooner than a point's, so this is checked per-cell, not one shared row).
+    for (let j = 1; j < N - 1; j++) {
+      const t = (j * CELL) / SIZE;
       for (let i = 1; i < N - 1; i++) {
+        if (t > this._coastT[i]) continue;
         const k = idx(i, j);
         if (blocked[k] || depth[k] < 0.004) continue;
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=8';
+import { Noise2D } from './noise.js?v=21';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -19,6 +19,30 @@ function idx(i, j) { return j * GRID + i; }
 function streamCenterX(z) {
   const t = z / SIZE;
   return SIZE * 0.72 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
+}
+
+// The coastline's t-threshold (0..1, inland->sea) as a function of column i - a
+// real bay silhouette, not a straight line: two low-frequency octaves carve
+// genuine coves and headland points tens of metres across (comparable in scale
+// to Mawgan Porth's own bay). This is the SINGLE source of truth for where
+// "land" ends and "sea" begins at this column - the water sim's tide zone and
+// erosion cutoff both call this too, so the simulation's idea of the coastline
+// always matches what's actually rendered, instead of a flat cutoff that would
+// flood a cove early or starve a headland point of its own tide/erosion.
+export function coastT(i) {
+  // The real constraint here isn't amplitude or frequency alone, it's their
+  // PRODUCT: that sets how fast the coastline shifts sideways in z per single
+  // column of x. Get that too high and the line looks jagged/zigzagged from
+  // ANY camera angle or transition width, no matter how the vertical land/sea
+  // blend is tuned - confirmed by direct measurement (an earlier version's
+  // coastline shifted over 10 grid cells of z across just 3-4 columns of x,
+  // close to a 45-degree diagonal at its steepest, which reads as a sawtooth
+  // rather than a curve). Tuned so each octave's own amp*freq stays small
+  // enough for a smooth, gently curving bay - still ~1 cycle plus a secondary
+  // wave, at a real, visible scale (tens of metres), just not a fast zigzag.
+  const bigCove = n3.fbm(i * 0.05 + 200, 0, 1);
+  const medCove = n3.fbm(i * 0.11 + 600, 0, 1);
+  return 0.60 + bigCove * 0.09 + medCove * 0.035;
 }
 
 export class Terrain {
@@ -63,37 +87,71 @@ export class Terrain {
         // Base profile modelled loosely on Mawgan Porth: a wide bay with a long,
         // gently-shelving sandy beach (broad low-tide sands), dunes at the back,
         // and rocky headlands closing off both sides of the bay.
-        let h = 0;
-        h += (1 - t) * 5.2;                              // gentle overall inland-to-sea slope
-        // The shoreline wanders in and out rather than running as a dead-straight
-        // line: a broad low-frequency component carves real coves and headland
-        // points (tens of metres across), with finer noise layered on top for
-        // jagged small-scale rockiness at their edges - not just a gentle wobble.
-        const shoreWander = n3.fbm(i * 0.018 + 200, 0, 3) * 0.075 + n3.fbm(i * 0.07 + 600, 0, 2) * 0.025;
-        h -= Math.pow(Math.max(0, t - (0.62 + shoreWander)), 1.55) * 8.5; // sea bed dips beyond the shoreline
-        h += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
-        h += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
+        // Build the LAND profile first (as if there were no sea at all), then blend
+        // to a fixed sea depth right at the coastline over a narrow, fixed-width
+        // transition. Earlier this used a single subtractive dip term whose onset
+        // was entangled with the ambient inland slope - a big swing in the
+        // coastline threshold barely moved the real land/sea crossing point
+        // (measured: +/-0.3 in threshold only moved the crossing by +/-0.09).
+        // Blending against a flat, coastline-independent sea depth instead means
+        // the crossing point tracks the threshold almost exactly, so real coves
+        // and points actually show up at the scale they're specified.
+        let hLand = 0;
+        hLand += (1 - t) * 5.2;                              // gentle overall inland-to-sea slope
+        hLand += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
+        hLand += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
 
         // Rocky headland cliffs closing both sides of the bay (like Mawgan Porth's cliffs):
         // a steep rise near the edge that levels into a clifftop plateau, not a soft dune bump.
         const cliffWidth = SIZE * 0.115;
         const dL = Math.abs(i * CELL - SIZE * 0.045);
         const dR = Math.abs(i * CELL - SIZE * 0.955);
-        const maskL = Math.pow(THREE.MathUtils.clamp(1 - dL / cliffWidth, 0, 1), 0.32);
-        const maskR = Math.pow(THREE.MathUtils.clamp(1 - dR / cliffWidth, 0, 1), 0.32);
+        // An exponent below 1 here (was 0.32) has an unbounded derivative right at
+        // its own zero point - the very first active cell past the cliff's outer
+        // edge jumps straight to ~40% of full mask height, not a gradual rise, and
+        // with an 11.5-unit headland coefficient that's a real visible seam right
+        // where the cliff's influence begins. An exponent above 1 starts smooth
+        // (small slope near zero) and only steepens near the clifftop itself,
+        // which also reads as more natural - a gentle talus slope at the base,
+        // steep rock face higher up - rather than a jump straight into the mask.
+        const maskL = Math.pow(THREE.MathUtils.clamp(1 - dL / cliffWidth, 0, 1), 1.6);
+        const maskR = Math.pow(THREE.MathUtils.clamp(1 - dR / cliffWidth, 0, 1), 1.6);
         const headland = Math.max(maskL, maskR);
-        h += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
+        hLand += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
 
-        // Fine detail noise, larger inland (soft dune texture) smaller on the wide sand flats
+        const coastline = coastT(i);
+        // Fine detail noise, larger inland (soft dune texture) smaller on the wide
+        // sand flats - and now explicitly faded out right at THIS column's own
+        // coastline (not a fixed t, since the coastline itself moves a lot per
+        // column). The old, slow high-exponent sea-edge curve used to absorb this
+        // kind of small bump without the visible boundary actually moving; the
+        // sharper blend below doesn't, so without this fade every dune ripple
+        // bled straight into the coastline as a jagged, comb-like edge.
         const duneDetail = n1.fbm(i * 0.045, j * 0.045, 4) * (0.85 - 0.55 * Math.min(1, t * 1.8));
-        h += duneDetail * (1 - Math.max(0, t - 0.5) * 1.6) * (1 - headland * 0.7);
-
-        // Small rock-pool style depressions on the mid/lower beach
+        const coastFade = THREE.MathUtils.clamp((coastline - t) / 0.08, 0, 1);
+        hLand += duneDetail * (1 - Math.max(0, t - 0.5) * 1.6) * (1 - headland * 0.7) * coastFade;
+        // Small rock-pool style depressions on the mid/lower beach, relative to
+        // THIS column's own coastline rather than a fixed band (or a cove's
+        // narrower dry strip would get no pools, and a point's longer one would
+        // get pools well out past where the old fixed band ended).
         const poolNoise = n3.fbm(i * 0.10 + 50, j * 0.10 + 50, 3);
-        if (t > 0.35 && t < 0.66) {
+        if (t > 0.35 && t < coastline - 0.04) {
           const dip = Math.max(0, poolNoise - 0.45) * 1.8 * (1 - headland);
-          h -= dip;
+          hLand -= dip;
         }
+
+        // Headlands are already their own explicit rock structure - don't let the
+        // sea blend eat into them just because a cove's coastline threshold
+        // happens to fall earlier at this same column. Width and slope both
+        // tuned for a gently-shelving beach, not a cliff: a narrow, steep version
+        // of this turned the whole coastline into a jagged little wall, because
+        // adjacent columns' drop-off points differ by a few metres (that's the
+        // whole point - it's what makes the coves and points) and a steep,
+        // narrow transition turns that natural difference into a visible ridge.
+        const seaEdgeWidth = 0.16;
+        const edge = THREE.MathUtils.clamp((t - coastline) / seaEdgeWidth, 0, 1) * (1 - headland * 0.85);
+        const seaDepth = -2.2 - Math.max(0, t - coastline) * 2.2;
+        let h = hLand * (1 - edge) + seaDepth * edge;
 
         this.bedrock[idx(i, j)] = h;
 
@@ -152,13 +210,21 @@ export class Terrain {
     // this is what actually makes a cliff FACE read as rock instead of the softer
     // colouring the plateau-shaped mask alone would give it right at the drop.
     // Excludes the stream channel itself: its banks are steep by construction but
-    // should stay sandy, not read as a rock canyon.
+    // should stay sandy, not read as a rock canyon. Also excludes each column's
+    // own coastal shelf (the sea-edge blend in the main loop above) - that slope
+    // is a deliberately gentle, natural beach gradient, not a cliff, but without
+    // this exclusion this pass darkened the ENTIRE coastline into jagged-looking
+    // bare rock, because a real bay's coastline curves in and out (coves and
+    // points), and this measures slope from local height differences - so it
+    // read every bend in that curve as if it were a small cliff.
     for (let j = 1; j < GRID - 1; j++) {
       const z = j * CELL;
+      const t = z / SIZE;
       const streamI = streamCenterX(z) / CELL;
       const streamWidth = (2.4 + 2.4 * (z / SIZE)) * 2.2;
       for (let i = 1; i < GRID - 1; i++) {
         if (Math.abs(i - streamI) < streamWidth) continue;
+        if (t > coastT(i) - 0.22) continue;
         const k = idx(i, j);
         const hL = this.bedrock[idx(i - 1, j)], hR = this.bedrock[idx(i + 1, j)];
         const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];

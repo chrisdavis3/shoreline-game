@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE } from './terrain.js?v=8';
-import { Noise2D } from './noise.js?v=8';
+import { GRID, CELL, SIZE, coastT } from './terrain.js?v=21';
+import { Noise2D } from './noise.js?v=21';
 
 const decoNoise = new Noise2D(555);
 
@@ -267,10 +267,13 @@ export function scatterProps(terrain) {
   const dummy = new THREE.Object3D();
   let pc = 0;
   for (let n = 0; n < pebbleCount * 3 && pc < pebbleCount; n++) {
-    const x = Math.random() * SIZE, z = Math.random() * SIZE * 0.62 + SIZE * 0.05;
+    const x = Math.random() * SIZE, z = Math.random() * SIZE * 0.85 + SIZE * 0.05;
     const t = z / SIZE;
     const density = decoNoise.fbm(x * 0.05, z * 0.05, 3);
-    if (density < 0.05 || t > 0.62) continue;
+    // Coves and points shift where land actually ends at this x - use the real
+    // coastline instead of a flat cutoff, or pebbles end up floating in the sea
+    // (in a cove) or missing from newly-exposed sand (on a point).
+    if (density < 0.05 || t > coastT(Math.round(x / CELL))) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     const scale = 0.08 + Math.random() * 0.16;
     dummy.position.set(x, y + scale * 0.3, z);
@@ -341,8 +344,10 @@ export function scatterProps(terrain) {
   // indexing, spawn logic, and the ocean/skirt bounds). Purely decorative: two
   // rock stacks with a rough lintel bridging them, no collision.
   const archMat = new THREE.MeshStandardMaterial({ color: '#6b6a63', roughness: 0.97, flatShading: true });
-  const archX = SIZE * 0.965;
-  const archZ = SIZE * 0.58;
+  const archX = SIZE * 0.90;
+  // The coastline itself now wanders a lot (real coves/points), so find where it
+  // actually sits at this column rather than assuming the old flat ~0.62 cutoff.
+  const archZ = SIZE * coastT(Math.round(archX / CELL));
   const archGroup = new THREE.Group();
   const stackGeo = new THREE.DodecahedronGeometry(1, 0);
   for (const side of [-1, 1]) {
