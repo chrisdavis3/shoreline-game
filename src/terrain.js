@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=21';
+import { Noise2D } from './noise.js?v=22';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -271,6 +271,7 @@ export class Terrain {
   _updateColors() {
     const sand = new THREE.Color('#cdbd97');
     const wetSand = new THREE.Color('#8f8365');
+    const mud = new THREE.Color('#4f4636'); // dark, saturated mud right at the immediate waterline
     const grass = new THREE.Color('#71805a');
     const dryGrass = new THREE.Color('#95935f');
     const rock = new THREE.Color('#7a7570');
@@ -308,7 +309,14 @@ export class Terrain {
           const strata = Math.sin(this.height[k] * 2.4) * 0.5 + 0.5;
           base.lerp(darkRock, strata * 0.22 * rockExposure);
         }
-        base.lerp(wetSand, THREE.MathUtils.clamp(wet, 0, 1) * 0.85);
+        // A single linear wet->sand blend reads as one flat "damp" tone everywhere
+        // water has ever been. Real banks are muddier the closer they sit to the
+        // water's edge right now - so bias a second, darker mud tone toward only
+        // the highest moisture values (biased with a square), layered on top of
+        // the broader damp-sand blend rather than replacing it.
+        const wetT = THREE.MathUtils.clamp(wet, 0, 1);
+        base.lerp(wetSand, wetT * 0.85);
+        base.lerp(mud, wetT * wetT * 0.55);
 
         // Freshly disturbed sand (just dug out, or just piled into a spoil rim) reads
         // as a distinct, richer "turned earth" tone that weathers back over about a

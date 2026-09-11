@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=21';
+import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=22';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -181,6 +181,32 @@ export class WaterSim {
         uniform vec3 uDeepColor;
         uniform vec3 uFoam;
         uniform vec3 uSunDir;
+
+        // Cheap hash noise for foam texture - no extra texture upload, just enough
+        // to break up a flat colour band into something bubbly/mottled.
+        float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+        float valueNoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          float a = hash21(i), b = hash21(i + vec2(1.0, 0.0));
+          float c = hash21(i + vec2(0.0, 1.0)), d = hash21(i + vec2(1.0, 1.0));
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+        }
+
+        // Underwater caustics - the rippled-light pattern sunlight makes on a shallow,
+        // clear riverbed (the sharpest, most recognisable "quality water" cue in
+        // every reference from crystal-clear streams to sunlit shallows). Two
+        // overlapping, independently-drifting sine grids create wavering, crossing
+        // light bands rather than a static pattern - cheap (no textures) but reads
+        // immediately as "sunlight through moving water" rather than a flat tint.
+        float caustics(vec2 p, float t) {
+          vec2 p1 = p * 0.55 + vec2(t * 0.12, t * 0.07);
+          vec2 p2 = p * 0.5 - vec2(t * 0.09, t * -0.11) + 19.0;
+          float c1 = sin(p1.x * 3.1 + sin(p1.y * 2.6 + t * 0.4));
+          float c2 = sin(p2.y * 3.4 + sin(p2.x * 2.3 - t * 0.3));
+          return pow(clamp(c1 * c2, 0.0, 1.0), 2.2);
+        }
+
         void main() {
           if (vDepth < 0.0015) discard;
           float depthN = clamp(vDepth / 3.2, 0.0, 1.0);
@@ -200,6 +226,10 @@ export class WaterSim {
           streak *= 0.6 + 0.4 * sin(across * 2.6 + uTime * 0.6);
           float streakVis = smoothstep(0.62, 0.95, streak) * smoothstep(0.015, 0.3, vDepth) * clamp(flowMag * 0.6, 0.0, 1.0);
           base = mix(base, uShallowColor * 1.25 + 0.05, streakVis * 0.5);
+          // Caustics only read in shallow, clear water - fade out with depth and
+          // under foam (broken, aerated water doesn't hold a sharp light pattern).
+          float causticVis = caustics(vWorldPos.xz, uTime) * smoothstep(0.9, 0.05, vDepth);
+          base += causticVis * 0.22;
           float fresnel = pow(1.0 - clamp(dot(normalize(vNormal), vec3(0.0,1.0,0.0)), 0.0, 1.0), 3.0);
           vec3 sky = vec3(0.72, 0.80, 0.82);
           base = mix(base, sky, fresnel * 0.35);
@@ -209,6 +239,13 @@ export class WaterSim {
           float foamFlow = smoothstep(0.55, 1.4, vFlow) * smoothstep(0.02, 0.25, vDepth);
           float surfFoam = smoothstep(0.3, 0.85, vCrest) * smoothstep(0.02, 0.2, vDepth);
           float foam = clamp(foamEdge * 0.85 + foamFlow * 0.6 + surfFoam * 0.9 + streakVis * 0.25, 0.0, 1.0);
+          // Break the foam up into a mottled, bubbly texture instead of a flat tint -
+          // two noise octaves drifting at slightly different speeds so it looks like
+          // it's actually churning, not a static painted-on band.
+          vec2 foamUv = vWorldPos.xz * 2.4 + vec2(uTime * 0.3, -uTime * 0.22);
+          float foamTex = valueNoise(foamUv) * 0.6 + valueNoise(foamUv * 2.3 + 5.0) * 0.4;
+          foam *= 0.55 + foamTex * 0.75;
+          foam = clamp(foam, 0.0, 1.0);
           vec3 color = mix(base, uFoam, foam);
           // Genuinely translucent - a submerged rock or the riverbed underneath
           // should still read through the surface, not vanish under it.
