@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=7';
+import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=8';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -250,6 +250,16 @@ export class WaterSim {
       for (let n = 0; n < row.length; n++) {
         const { k, target } = row[n];
         if (blocked[k]) continue;
+        // This profile is a frozen snapshot of the AS-GENERATED channel, taken once
+        // at world creation - so without this check, a player who deliberately dams
+        // the original course (piles enough sand to raise it well above its
+        // original bedrock height) would find it silently re-flooded every step
+        // regardless, making that spot impossible to actually dam and any
+        // diversion elsewhere pointless. Comparing current height against the
+        // untouched bedrock (not the mutable current height) lets a real dam
+        // suppress seepage here, while normal erosion/deposition - which self-
+        // limits to a much smaller drift - still leaves this alone.
+        if (h[k] - terrain.bedrock[k] > 0.6) continue;
         const deficit = target - depth[k];
         if (deficit > 0) depth[k] += deficit * Math.min(1, 0.35 * dt);
       }
