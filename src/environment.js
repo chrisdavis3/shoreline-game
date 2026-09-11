@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT } from './terrain.js?v=36';
-import { Noise2D } from './noise.js?v=36';
+import { GRID, CELL, SIZE, coastT } from './terrain.js?v=38';
+import { Noise2D } from './noise.js?v=38';
 
 const decoNoise = new Noise2D(555);
 
