@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=23';
+import { Noise2D } from './noise.js?v=24';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -29,6 +29,21 @@ function streamCenterX(z) {
 // erosion cutoff both call this too, so the simulation's idea of the coastline
 // always matches what's actually rendered, instead of a flat cutoff that would
 // flood a cove early or starve a headland point of its own tide/erosion.
+// The bay's large-scale shape (no local noise yet): wide and gentle, staying
+// deep across most of the map's width and only closing up near the very
+// edges - a real "wide embayed beach" curve (Mawgan Porth's own description),
+// not a tight semicircle. cos() gives a flat top (zero slope at the centre)
+// and a bounded, gentle slope even at its steepest (the very edges) - unlike
+// a fixed-position cliff mask, this is what actually makes the level's OWN
+// outer footprint curve into a rounded bay instead of running out to a
+// rectangle: the headland cliffs below are derived from this same curve,
+// closing in wherever it has, rather than sitting at two fixed x positions.
+function bayBaseCoast(i) {
+  const centered = THREE.MathUtils.clamp((i / GRID - 0.5) * 2, -1, 1); // -1..1
+  const bayCurve = Math.cos(centered * Math.PI * 0.42);
+  return 0.30 + bayCurve * 0.42; // ~0.30 at the edges, ~0.72 at the centre
+}
+
 export function coastT(i) {
   // The real constraint here isn't amplitude or frequency alone, it's their
   // PRODUCT: that sets how fast the coastline shifts sideways in z per single
@@ -40,9 +55,9 @@ export function coastT(i) {
   // rather than a curve). Tuned so each octave's own amp*freq stays small
   // enough for a smooth, gently curving bay - still ~1 cycle plus a secondary
   // wave, at a real, visible scale (tens of metres), just not a fast zigzag.
-  const bigCove = n3.fbm(i * 0.05 + 200, 0, 1);
-  const medCove = n3.fbm(i * 0.11 + 600, 0, 1);
-  return 0.60 + bigCove * 0.09 + medCove * 0.035;
+  const bigCove = n3.fbm(i * 0.09 + 200, 0, 1);
+  const medCove = n3.fbm(i * 0.20 + 600, 0, 1);
+  return bayBaseCoast(i) + bigCove * 0.07 + medCove * 0.03;
 }
 
 export class Terrain {
@@ -101,22 +116,21 @@ export class Terrain {
         hLand += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
         hLand += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
 
-        // Rocky headland cliffs closing both sides of the bay (like Mawgan Porth's cliffs):
-        // a steep rise near the edge that levels into a clifftop plateau, not a soft dune bump.
-        const cliffWidth = SIZE * 0.115;
-        const dL = Math.abs(i * CELL - SIZE * 0.045);
-        const dR = Math.abs(i * CELL - SIZE * 0.955);
-        // An exponent below 1 here (was 0.32) has an unbounded derivative right at
-        // its own zero point - the very first active cell past the cliff's outer
-        // edge jumps straight to ~40% of full mask height, not a gradual rise, and
-        // with an 11.5-unit headland coefficient that's a real visible seam right
-        // where the cliff's influence begins. An exponent above 1 starts smooth
-        // (small slope near zero) and only steepens near the clifftop itself,
-        // which also reads as more natural - a gentle talus slope at the base,
-        // steep rock face higher up - rather than a jump straight into the mask.
-        const maskL = Math.pow(THREE.MathUtils.clamp(1 - dL / cliffWidth, 0, 1), 1.6);
-        const maskR = Math.pow(THREE.MathUtils.clamp(1 - dR / cliffWidth, 0, 1), 1.6);
-        const headland = Math.max(maskL, maskR);
+        // Rocky headland cliffs closing both sides of the bay (like Mawgan Porth's
+        // Berryl's Point and Trenance Point): earlier this was two straight cliff
+        // strips at fixed x positions, which is exactly why the level's overall
+        // footprint still read as a rectangle with a wavy front edge, not an
+        // actual rounded bay - the cliffs never curved inward with the coastline,
+        // they just sat there regardless of it. Deriving headland strength from
+        // the SAME bay curve instead means the cliffs close in wherever the bay
+        // itself has closed in: no cliff at the centre (the bay's at its widest),
+        // rising toward full cliff at the edges (the bay's fully closed there).
+        // Only actually renders as cliff past the dune line in z - inland of that
+        // it's ordinary dunes no matter which column.
+        const baseCoast = bayBaseCoast(i);
+        const cliffPotential = THREE.MathUtils.clamp(1 - (baseCoast - 0.30) / 0.42, 0, 1);
+        const cliffOnset = THREE.MathUtils.clamp((t - 0.28) / 0.16, 0, 1);
+        const headland = cliffPotential * cliffOnset;
         hLand += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
 
         const coastline = coastT(i);
