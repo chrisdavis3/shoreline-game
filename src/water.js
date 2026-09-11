@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=4';
+import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=7';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -95,6 +95,8 @@ export class WaterSim {
     this.geometry.setAttribute('aDepth', this.depthAttr);
     this.flowAttr = new THREE.BufferAttribute(new Float32Array(N * N), 1);
     this.geometry.setAttribute('aFlow', this.flowAttr);
+    this.flowDirAttr = new THREE.BufferAttribute(new Float32Array(N * N * 2), 2);
+    this.geometry.setAttribute('aFlowDir', this.flowDirAttr);
 
     this.uniforms = {
       uTime: { value: 0 },
@@ -111,8 +113,10 @@ export class WaterSim {
       vertexShader: /* glsl */`
         attribute float aDepth;
         attribute float aFlow;
+        attribute vec2 aFlowDir;
         varying float vDepth;
         varying float vFlow;
+        varying vec2 vFlowDir;
         varying float vCrest;
         varying vec3 vWorldPos;
         varying vec3 vNormal;
@@ -120,6 +124,7 @@ export class WaterSim {
         void main() {
           vDepth = aDepth;
           vFlow = aFlow;
+          vFlowDir = aFlowDir;
           vec3 pos = position;
           float ripple = sin(pos.x * 1.3 + uTime * 1.6) * 0.02 + cos(pos.z * 1.1 - uTime * 1.3) * 0.02;
           pos.y += (aDepth > 0.002) ? ripple * min(1.0, aDepth * 4.0) : 0.0;
@@ -139,6 +144,7 @@ export class WaterSim {
       fragmentShader: /* glsl */`
         varying float vDepth;
         varying float vFlow;
+        varying vec2 vFlowDir;
         varying float vCrest;
         varying vec3 vWorldPos;
         varying vec3 vNormal;
@@ -153,6 +159,19 @@ export class WaterSim {
           vec3 base = mix(uShallowColor, uDeepColor, depthN);
           float shimmer = sin(vWorldPos.x * 2.2 + uTime * 1.8) * cos(vWorldPos.z * 2.0 - uTime * 1.4);
           base += shimmer * 0.02;
+          // Streaks of surface texture travel WITH the actual current (vFlowDir, the
+          // sim's real per-cell velocity), not just a fixed ambient shimmer pattern -
+          // that's what actually reads as "the river is moving" rather than the
+          // water just sitting there changing color in place.
+          float flowMag = length(vFlowDir);
+          vec2 dir = flowMag > 0.02 ? vFlowDir / flowMag : vec2(0.0, 1.0);
+          float along = dot(vWorldPos.xz, dir);
+          float across = dot(vWorldPos.xz, vec2(-dir.y, dir.x));
+          float streakSpeed = 1.6 + min(flowMag, 3.0) * 1.8;
+          float streak = sin(along * 1.4 - uTime * streakSpeed) * 0.5 + 0.5;
+          streak *= 0.6 + 0.4 * sin(across * 2.6 + uTime * 0.6);
+          float streakVis = smoothstep(0.62, 0.95, streak) * smoothstep(0.015, 0.3, vDepth) * clamp(flowMag * 0.6, 0.0, 1.0);
+          base = mix(base, uShallowColor * 1.25 + 0.05, streakVis * 0.5);
           float fresnel = pow(1.0 - clamp(dot(normalize(vNormal), vec3(0.0,1.0,0.0)), 0.0, 1.0), 3.0);
           vec3 sky = vec3(0.72, 0.80, 0.82);
           base = mix(base, sky, fresnel * 0.35);
@@ -161,7 +180,7 @@ export class WaterSim {
           float foamEdge = smoothstep(0.14, 0.0, vDepth);
           float foamFlow = smoothstep(0.55, 1.4, vFlow) * smoothstep(0.02, 0.25, vDepth);
           float surfFoam = smoothstep(0.3, 0.85, vCrest) * smoothstep(0.02, 0.2, vDepth);
-          float foam = clamp(foamEdge * 0.85 + foamFlow * 0.6 + surfFoam * 0.9, 0.0, 1.0);
+          float foam = clamp(foamEdge * 0.85 + foamFlow * 0.6 + surfFoam * 0.9 + streakVis * 0.25, 0.0, 1.0);
           vec3 color = mix(base, uFoam, foam);
           // Genuinely translucent - a submerged rock or the riverbed underneath
           // should still read through the surface, not vanish under it.
@@ -404,6 +423,7 @@ export class WaterSim {
   _syncMeshAttrs(terrain) {
     const depthArr = this.depthAttr.array;
     const flowArr = this.flowAttr.array;
+    const flowDirArr = this.flowDirAttr.array;
     const pos = this.geometry.attributes.position;
     const th = terrain.height;
     const blocked = terrain.blocked;
@@ -425,11 +445,14 @@ export class WaterSim {
         }
         depthArr[k] = d;
         flowArr[k] = this.flowSpeed[k];
+        flowDirArr[k * 2] = this.velX[k];
+        flowDirArr[k * 2 + 1] = this.velZ[k];
         pos.setY(k, th[k] + d + 0.006);
       }
     }
     this.depthAttr.needsUpdate = true;
     this.flowAttr.needsUpdate = true;
+    this.flowDirAttr.needsUpdate = true;
     pos.needsUpdate = true;
     if ((this._normAccum = (this._normAccum || 0) + 1) % 6 === 0) {
       this.geometry.computeVertexNormals();

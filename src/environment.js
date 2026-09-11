@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE } from './terrain.js?v=4';
-import { Noise2D } from './noise.js?v=4';
+import { GRID, CELL, SIZE } from './terrain.js?v=7';
+import { Noise2D } from './noise.js?v=7';
 
 const decoNoise = new Noise2D(555);
 
@@ -334,6 +334,35 @@ export function scatterProps(terrain) {
     wood.setMatrixAt(n, dummy.matrix);
   }
   group.add(wood);
+
+  // A single sea-arch at the tip of the right-hand headland - a small nod toward
+  // "rocks and caves" without reworking the whole rectangular map into a true
+  // irregular bay (a much larger change - would touch the water sim's grid
+  // indexing, spawn logic, and the ocean/skirt bounds). Purely decorative: two
+  // rock stacks with a rough lintel bridging them, no collision.
+  const archMat = new THREE.MeshStandardMaterial({ color: '#6b6a63', roughness: 0.97, flatShading: true });
+  const archX = SIZE * 0.965;
+  const archZ = SIZE * 0.58;
+  const archGroup = new THREE.Group();
+  const stackGeo = new THREE.DodecahedronGeometry(1, 0);
+  for (const side of [-1, 1]) {
+    const sx = archX + side * 2.6;
+    const sy = terrain.sampleHeightBilinear(sx, archZ);
+    const stack = new THREE.Mesh(stackGeo, archMat);
+    stack.position.set(sx, sy + 2.1, archZ + (Math.random() - 0.5) * 0.6);
+    stack.scale.set(1.5, 2.4, 1.5);
+    stack.rotation.set(Math.random() * 0.3, Math.random() * Math.PI, Math.random() * 0.2);
+    stack.castShadow = true;
+    stack.receiveShadow = true;
+    archGroup.add(stack);
+  }
+  const lintelY = terrain.sampleHeightBilinear(archX, archZ) + 3.6;
+  const lintel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.35, 5.6, 7), archMat);
+  lintel.rotation.z = Math.PI / 2;
+  lintel.position.set(archX, lintelY, archZ);
+  lintel.castShadow = true;
+  archGroup.add(lintel);
+  group.add(archGroup);
 
   return group;
 }

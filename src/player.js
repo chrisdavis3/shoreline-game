@@ -306,11 +306,21 @@ export class Player {
     const legSwing = swing * 0.7;
     p.legL.pivot.rotation.x = legSwing;
     p.legR.pivot.rotation.x = -legSwing;
+
+    // A tidy adult stride keeps the arms as a clean mirror of the legs. A kid
+    // running flat out doesn't bother being efficient - past a walking pace,
+    // blend in a wider swing plus a faster, slightly-off-phase wobble that
+    // breaks the left/right mirror, so a full sprint reads as flailing effort
+    // rather than a smooth gait. Below that pace it's untouched (runT = 0).
+    const runT = THREE.MathUtils.clamp((this.speed - 2.3) / 2.3, 0, 1);
     if (this.state !== 'carry') {
-      p.armL.pivot.rotation.x = -legSwing * 0.8;
-      p.armR.pivot.rotation.x = legSwing * 0.8;
+      const flail = Math.sin(this.walkCycle * 2.6 + 0.7) * 0.35;
+      const armSwing = THREE.MathUtils.lerp(-legSwing * 0.8, -legSwing * 1.8 + flail, runT);
+      p.armL.pivot.rotation.x = armSwing;
+      p.armR.pivot.rotation.x = -armSwing - flail * 1.6 * runT;
     }
-    p.hips.position.y = 0.254 + Math.abs(Math.cos(this.walkCycle)) * 0.018 * Math.min(1, this.speed / 2);
+    p.hips.position.y = 0.254 + Math.abs(Math.cos(this.walkCycle)) * (0.018 + runT * 0.014) * Math.min(1, this.speed / 2);
+    p.hips.rotation.z = Math.sin(this.walkCycle) * 0.09 * runT;
     p.hips.rotation.x = THREE.MathUtils.lerp(p.hips.rotation.x, 0, 0.2);
   }
 

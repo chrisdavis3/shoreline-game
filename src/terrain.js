@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=4';
+import { Noise2D } from './noise.js?v=7';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -65,9 +65,11 @@ export class Terrain {
         // and rocky headlands closing off both sides of the bay.
         let h = 0;
         h += (1 - t) * 5.2;                              // gentle overall inland-to-sea slope
-        // The shoreline itself wanders in and out (small coves and points) rather than
-        // running as a dead-straight line across the whole bay.
-        const shoreWander = n3.fbm(i * 0.035 + 200, 0, 3) * 0.05;
+        // The shoreline wanders in and out rather than running as a dead-straight
+        // line: a broad low-frequency component carves real coves and headland
+        // points (tens of metres across), with finer noise layered on top for
+        // jagged small-scale rockiness at their edges - not just a gentle wobble.
+        const shoreWander = n3.fbm(i * 0.018 + 200, 0, 3) * 0.075 + n3.fbm(i * 0.07 + 600, 0, 2) * 0.025;
         h -= Math.pow(Math.max(0, t - (0.62 + shoreWander)), 1.55) * 8.5; // sea bed dips beyond the shoreline
         h += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
         h += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
