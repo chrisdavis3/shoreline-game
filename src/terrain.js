@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=32';
+import { Noise2D } from './noise.js?v=35';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -122,11 +122,30 @@ export class Terrain {
         // version jumped straight to ~40% mask height in its very first active
         // cell, a visible seam - see the fix history). Only actually renders as
         // cliff past the dune line in z - inland of that it's ordinary dunes.
+        //
+        // A FIXED cliff width regardless of t was the reason the whole level's
+        // footprint still read as a rectangle even after the coastline itself got
+        // wavy: real aerial photos of this beach show it tapering like a funnel -
+        // wide where the sand meets the dunes, narrowing hard toward a near-point
+        // where it meets the waves - not a constant-width channel with a wiggly
+        // far edge. So the cliff width itself now grows with t: narrow right at
+        // the dune line (the beach is at its fullest width there) and much wider
+        // by the time t nears the coastline (the two headlands have closed in to
+        // little more than the river gap by then).
         const edgeDist = Math.min(i, GRID - 1 - i); // cells from the nearest real end
-        const cliffWidthCells = 24; // wide enough to read as a real headland; wider than this reopened the seam-at-the-edge issue
+        const taperT = THREE.MathUtils.clamp((t - 0.15) / 0.62, 0, 1);
+        const cliffWidthCells = 8 + 60 * Math.pow(taperT, 1.25);
         const cliffPotential = Math.pow(THREE.MathUtils.clamp(1 - edgeDist / cliffWidthCells, 0, 1), 1.6);
-        const cliffOnset = THREE.MathUtils.clamp((t - 0.28) / 0.16, 0, 1);
-        const headland = cliffPotential * cliffOnset;
+        const cliffOnset = THREE.MathUtils.clamp((t - 0.20) / 0.14, 0, 1);
+        // The funnel taper above narrows the whole beach toward the sea - but the
+        // real river cuts its own gap straight through that narrowing (that's
+        // where the tidal creek visibly slices between the rocks in aerial
+        // photos), so the taper can't be allowed to close over the stream's own
+        // path the way it closes over everywhere else near the coast.
+        const streamGapDist = Math.abs(i - streamCenterX(z) / CELL);
+        const streamGapWidth = 7 + 6 * t;
+        const streamExemption = THREE.MathUtils.clamp(1 - streamGapDist / streamGapWidth, 0, 1);
+        const headland = cliffPotential * cliffOnset * (1 - streamExemption * 0.92);
         hLand += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
 
         const coastline = coastT(i);
