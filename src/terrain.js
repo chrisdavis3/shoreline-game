@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=38';
+import { Noise2D } from './noise.js?v=39';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -126,15 +126,14 @@ export class Terrain {
         // Actually looking at the real map (twice got this backwards before -
         // first as a constant width, then tapering the WRONG direction): the sand
         // is NARROW right where it meets the road/dunes and FANS OUT into a wide
-        // mouth at the sea - the cliffs pinch in hardest near the inland neck and
-        // pull back as you approach the coastline, not the other way round. So
-        // cliff width is now LARGEST far inland (small distToCoast... no - large
-        // distToCoast, i.e. still well short of this column's own coastline) and
-        // SMALLEST right at the coastline itself, where the bay is at its widest.
+        // mouth at the sea - real headlands are barely there at the inland neck
+        // and get wider and more dominant as you approach the coastline, staying
+        // wide (rocky points jutting into the water) at and beyond it. So cliff
+        // width is SMALLEST far inland and LARGEST right at and past the coastline.
         const edgeDist = Math.min(i, GRID - 1 - i); // cells from the nearest real end
         const distToCoast = coastT(i) - t; // >0 inland of the coastline, <=0 at/past it
-        const narrowT = THREE.MathUtils.clamp(distToCoast / 0.5, 0, 1); // 1 = still far from the coast (narrow neck), 0 = at the coastline (wide mouth)
-        const cliffWidthCells = 8 + 60 * Math.pow(narrowT, 1.25);
+        const nearCoastT = THREE.MathUtils.clamp(1 - distToCoast / 0.5, 0, 1); // 0 = still far from the coast (narrow neck), 1 = at/past the coastline (wide headland)
+        const cliffWidthCells = 8 + 60 * Math.pow(nearCoastT, 1.25);
         const cliffPotential = Math.pow(THREE.MathUtils.clamp(1 - edgeDist / cliffWidthCells, 0, 1), 1.6);
         const cliffOnset = THREE.MathUtils.clamp((t - 0.20) / 0.14, 0, 1);
         // The funnel taper above narrows the whole beach toward the sea - but the
