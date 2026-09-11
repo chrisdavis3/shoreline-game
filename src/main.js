@@ -1,16 +1,16 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=35';
-import { WaterSim } from './water.js?v=35';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=35';
-import { scatterRocks } from './rocks.js?v=35';
-import { Player } from './player.js?v=35';
-import { AudioSystem } from './audio.js?v=35';
-import { Particles } from './particles.js?v=35';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=36';
+import { WaterSim } from './water.js?v=36';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=36';
+import { scatterRocks } from './rocks.js?v=36';
+import { Player } from './player.js?v=36';
+import { AudioSystem } from './audio.js?v=36';
+import { Particles } from './particles.js?v=36';
 
 // ---------- renderer / scene / camera ----------
 
 const app = document.getElementById('app');
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(3, window.devicePixelRatio || 1));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
