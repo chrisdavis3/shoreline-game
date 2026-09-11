@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=22';
+import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=23';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -310,20 +310,33 @@ export class WaterSim {
     // and pooling still behave normally; this just guarantees the stream can never
     // fully dry out from the diffusion scheme draining a thin sheet faster than a
     // single spring can refill it.
+    //
+    // This profile is a frozen snapshot of the AS-GENERATED channel, taken once at
+    // world creation, and _seepProfile is ordered source-to-sea. A per-cell dam
+    // check alone (comparing current height to the untouched bedrock) stops THAT
+    // cell from being re-flooded, but every other row still tops itself up from
+    // its own original bedrock regardless of whether anything upstream can still
+    // reach it - so damming the channel at one crossing left the entire rest of
+    // its length seeping exactly as before, and a full diversion could never
+    // actually dry the old course out. A real dammed river dries out everywhere
+    // downstream of the dam, not just at the dam itself - so once a row is found
+    // where EVERY cell is dammed, stop seeping that row and all rows after it
+    // (further toward the sea) for this step; a still-open row anywhere upstream
+    // of a dam keeps seeping normally.
+    let damBlocked = false;
     for (let j = 0; j < this._seepRows; j++) {
       const row = this._seepProfile[j];
+      if (!damBlocked && row.length > 0) {
+        damBlocked = true;
+        for (let n = 0; n < row.length; n++) {
+          const { k } = row[n];
+          if (h[k] - terrain.bedrock[k] <= 0.6) { damBlocked = false; break; }
+        }
+      }
+      if (damBlocked) continue;
       for (let n = 0; n < row.length; n++) {
         const { k, target } = row[n];
         if (blocked[k]) continue;
-        // This profile is a frozen snapshot of the AS-GENERATED channel, taken once
-        // at world creation - so without this check, a player who deliberately dams
-        // the original course (piles enough sand to raise it well above its
-        // original bedrock height) would find it silently re-flooded every step
-        // regardless, making that spot impossible to actually dam and any
-        // diversion elsewhere pointless. Comparing current height against the
-        // untouched bedrock (not the mutable current height) lets a real dam
-        // suppress seepage here, while normal erosion/deposition - which self-
-        // limits to a much smaller drift - still leaves this alone.
         if (h[k] - terrain.bedrock[k] > 0.6) continue;
         const deficit = target - depth[k];
         if (deficit > 0) depth[k] += deficit * Math.min(1, 0.35 * dt);
