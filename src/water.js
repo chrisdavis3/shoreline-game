@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT } from './terrain.js?v=39';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=40';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -108,6 +108,19 @@ export class WaterSim {
     this.geometry.setAttribute('aFlow', this.flowAttr);
     this.flowDirAttr = new THREE.BufferAttribute(new Float32Array(N * N * 2), 2);
     this.geometry.setAttribute('aFlowDir', this.flowDirAttr);
+
+    // Match the terrain mesh's inland-neck taper (see terrain.js warpX) - the
+    // water surface needs the same x warp or it'd float over ground that no
+    // longer lines up with it near the dune line.
+    {
+      const pos = this.geometry.attributes.position;
+      for (let j = 0; j < N; j++) {
+        const z = j * CELL;
+        for (let i = 0; i < N; i++) {
+          pos.setX(idx(i, j), warpX(i * CELL, z));
+        }
+      }
+    }
 
     // The surf/wave-crest effect below needs to know where the REAL (per-column,
     // irregular) coastline is, not a flat cutoff - otherwise the breaking-wave

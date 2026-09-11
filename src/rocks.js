@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX } from './terrain.js?v=39';
-import { Noise2D } from './noise.js?v=39';
+import { GRID, CELL, SIZE, streamCenterX, warpX } from './terrain.js?v=40';
+import { Noise2D } from './noise.js?v=40';
 
 const rn = new Noise2D(777);
 
@@ -45,7 +45,9 @@ export class Rock {
 
   settle(terrain) {
     const y = terrain.sampleHeightBilinear(this.x, this.z);
-    this.mesh.position.set(this.x, y + this.radius * 0.25, this.z);
+    // this.x/this.z stay the logical (unwarped) position for all physics/blocking
+    // math below - only the rendered mesh needs the same visual taper as the ground.
+    this.mesh.position.set(warpX(this.x, this.z), y + this.radius * 0.25, this.z);
   }
 
   _cellsUnder() {

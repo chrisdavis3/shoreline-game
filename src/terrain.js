@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=39';
+import { Noise2D } from './noise.js?v=40';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -57,6 +57,26 @@ const REAL_COAST_T = [
 
 export function coastT(i) {
   return REAL_COAST_T[THREE.MathUtils.clamp(Math.round(i), 0, GRID - 1)];
+}
+
+// The level's own physical footprint was still a perfect square in world space
+// no matter how the sand/rock/sea classification varied within it - every
+// depth row spanned the full [0, SIZE] width, so the mesh always ended in a
+// hard 90-degree corner where the inland (dune-line) edge met the side edge.
+// Real Mawgan Porth is narrow where the beach meets the road/dunes and only
+// reaches full width once you're well down the bay. This pulls every row's
+// vertices inward toward the centreline by that same amount, so the actual
+// boundary of the ground - not just its coloring - narrows at the neck. Only
+// x is warped (z/depth is untouched), and it's applied to render-only
+// positions - the (i, j) simulation grid underneath stays a plain rectangle.
+export function footprintWidth(t) {
+  const wt = THREE.MathUtils.clamp(t / 0.30, 0, 1);
+  return 0.52 + 0.48 * Math.pow(wt, 1.4);
+}
+
+export function warpX(x, z) {
+  const t = z / SIZE;
+  return SIZE / 2 + (x - SIZE / 2) * footprintWidth(t);
 }
 
 export class Terrain {
@@ -303,8 +323,11 @@ export class Terrain {
   _syncPositions() {
     const pos = this.geometry.attributes.position;
     for (let j = 0; j < GRID; j++) {
+      const z = j * CELL;
       for (let i = 0; i < GRID; i++) {
-        pos.setY(idx(i, j), this.height[idx(i, j)]);
+        const k = idx(i, j);
+        pos.setX(k, warpX(i * CELL, z));
+        pos.setY(k, this.height[k]);
       }
     }
     pos.needsUpdate = true;

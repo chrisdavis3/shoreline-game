@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { warpX } from './terrain.js?v=40';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this
@@ -214,7 +215,7 @@ export class Player {
 
   setSpawn(x, z) {
     this.pos.set(x, this.terrain.sampleHeightBilinear(x, z), z);
-    this.mesh.position.copy(this.pos);
+    this.mesh.position.set(warpX(this.pos.x, this.pos.z), this.pos.y, this.pos.z);
   }
 
   update(dt, input, world) {
@@ -261,7 +262,9 @@ export class Player {
       this.facing += diff * Math.min(1, 10 * dt);
     }
 
-    this.mesh.position.copy(this.pos);
+    // this.pos stays the logical (unwarped) position for all movement/physics
+    // above - only the rendered mesh needs the same visual taper as the ground.
+    this.mesh.position.set(warpX(this.pos.x, this.pos.z), this.pos.y, this.pos.z);
     this.mesh.rotation.y = this.facing;
 
     // footstep events

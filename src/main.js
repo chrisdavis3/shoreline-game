@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=39';
-import { WaterSim } from './water.js?v=39';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=39';
-import { scatterRocks } from './rocks.js?v=39';
-import { Player } from './player.js?v=39';
-import { AudioSystem } from './audio.js?v=39';
-import { Particles } from './particles.js?v=39';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=40';
+import { WaterSim } from './water.js?v=40';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=40';
+import { scatterRocks } from './rocks.js?v=40';
+import { Player } from './player.js?v=40';
+import { AudioSystem } from './audio.js?v=40';
+import { Particles } from './particles.js?v=40';
 
 // ---------- renderer / scene / camera ----------
 

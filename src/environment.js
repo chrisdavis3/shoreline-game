@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT } from './terrain.js?v=39';
-import { Noise2D } from './noise.js?v=39';
+import { GRID, CELL, SIZE, coastT, warpX, footprintWidth } from './terrain.js?v=40';
+import { Noise2D } from './noise.js?v=40';
 
 const decoNoise = new Noise2D(555);
 
@@ -276,7 +276,7 @@ export function scatterProps(terrain) {
     if (density < 0.05 || t > coastT(Math.round(x / CELL))) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     const scale = 0.08 + Math.random() * 0.16;
-    dummy.position.set(x, y + scale * 0.3, z);
+    dummy.position.set(warpX(x, z), y + scale * 0.3, z);
     dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
     dummy.scale.set(scale, scale * 0.7, scale);
     dummy.updateMatrix();
@@ -309,7 +309,7 @@ export function scatterProps(terrain) {
       const y = terrain.sampleHeightBilinear(x, z);
       const scaleY = 0.55 + Math.random() * 0.75;
       const scaleXZ = 0.7 + Math.random() * 0.6;
-      dummy.position.set(x, y, z);
+      dummy.position.set(warpX(x, z), y, z);
       dummy.rotation.set((Math.random() - 0.5) * 0.5, Math.random() * Math.PI, (Math.random() - 0.5) * 0.5);
       dummy.scale.set(scaleXZ, scaleY, scaleXZ);
       dummy.updateMatrix();
@@ -330,7 +330,7 @@ export function scatterProps(terrain) {
   for (let n = 0; n < woodCount; n++) {
     const x = Math.random() * SIZE, z = SIZE * 0.42 + Math.random() * SIZE * 0.22;
     const y = terrain.sampleHeightBilinear(x, z);
-    dummy.position.set(x, y + 0.1, z);
+    dummy.position.set(warpX(x, z), y + 0.1, z);
     dummy.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.3, 0, Math.random() * Math.PI);
     dummy.scale.setScalar(0.6 + Math.random() * 0.8);
     dummy.updateMatrix();
@@ -398,7 +398,15 @@ export function buildSkirt(terrain) {
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
-    const dxOut = Math.max(0, -x, x - SIZE);
+    // The real terrain's own left/right edges now taper inward toward the dune
+    // line (see terrain.js warpX/footprintWidth) instead of running the full
+    // [0, SIZE] width - use those same warped bounds here, or this hill rise
+    // would only start at the old, wider fixed edges and leave a visible gap
+    // of nothing between the narrowed sand and the rising background.
+    const t = z / SIZE;
+    const half = (SIZE / 2) * footprintWidth(t);
+    const left = SIZE / 2 - half, right = SIZE / 2 + half;
+    const dxOut = Math.max(0, left - x, x - right);
     const dzLand = Math.max(0, -z);
     const dzSea = Math.max(0, z - SIZE);
     const outside = Math.max(dxOut, dzLand);
