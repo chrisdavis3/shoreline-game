@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=48';
-import { Noise2D } from './noise.js?v=48';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=49';
+import { Noise2D } from './noise.js?v=49';
 
 const decoNoise = new Noise2D(555);
 
@@ -92,7 +92,11 @@ export function buildOcean(waterUniforms) {
         // shoreline, translated at world z = SIZE) and rear up into breakers as they
         // shoal, matching the same crest system the near-shore water mesh uses.
         float shoreZone = smoothstep(300.0, -450.0, pos.z);
-        float wavePhase = fract((pos.z - uTime * 5.5) / 7.5);
+        // Decreasing local z is toward shore here (see the comment above) - the
+        // comment already said crests should travel shoreward, but the formula's
+        // sign did the opposite (sent them out to sea). Matches the same fix in
+        // water.js's near-shore crest shader.
+        float wavePhase = fract((pos.z + uTime * 5.5) / 7.5);
         float crest = pow(max(0.0, sin(wavePhase * 6.28318)), 5.0);
         pos.y += crest * shoreZone * 0.55;
         vCrest = crest * shoreZone;

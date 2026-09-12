@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=48';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=49';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -243,7 +243,12 @@ export class WaterSim {
           // a fixed z-threshold put the whole surf effect at the wrong depth almost
           // everywhere, showing up as a comb of bumps on dry sand in every cove.
           float shoreZone = smoothstep(aCoastZ - 10.0, aCoastZ + ${(SIZE * (1 - SEA_ROW_T)).toFixed(1)}, pos.z);
-          float wavePhase = fract((pos.z - uTime * 5.5) / 7.5);
+          // z=0 is inland/dunes, z=SIZE is open sea (see terrain.js's own header
+          // comment) - a real wave travels from offshore (high z) toward the
+          // shore (low z), so the phase must shift toward DECREASING z as uTime
+          // grows. The previous pos.z minus uTime version did the opposite,
+          // sending crests visibly retreating out to sea instead of breaking onto it.
+          float wavePhase = fract((pos.z + uTime * 5.5) / 7.5);
           float crest = pow(max(0.0, sin(wavePhase * 6.28318)), 5.0);
           pos.y += crest * shoreZone * 0.16 * min(1.0, aDepth * 6.0);
           vCrest = crest * shoreZone;
