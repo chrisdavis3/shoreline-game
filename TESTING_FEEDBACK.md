@@ -18,3 +18,21 @@ a mismatch between the water mesh's extent (especially after the recent
 RENDER_SS super-sampling and warpX footprint-taper changes) and the terrain
 mesh's own boundary at that same location, exposing a gap between them.
 Not urgent - explicitly flagged as low priority, fix in a later pass.
+
+## Addressed, needs re-verification
+
+### 2026-09-12 — River checkerboard/crenellation (FIXED, commit 98e2376)
+Was: severe - the river's depth field oscillated row-to-row/column-to-column
+(the sim's flux scheme could only ever send water toward a strictly-lower
+neighbour, so the thalweg relayed between two near-symmetric cells instead of
+settling), which fed directly into vertex Y position - rendered as literal
+castle-tooth pillars with cast shadows at a low camera angle. Fixed with a
+topology-aware, per-edge mass-conserving blur (only smooths cells with wet
+neighbours, so a genuine wetting front isn't erased). Verified live: pillars
+with shadows are gone.
+
+Residual, much milder issue found during re-verification: at close zoom the
+sandbars poking into the channel from alternating banks still form a fairly
+regular, evenly-spaced "comb" pattern rather than organic variation - flat,
+no geometry spikes, nowhere near the old severity, but still slightly
+artificial-looking. Worth a follow-up pass if there's time; not urgent.
