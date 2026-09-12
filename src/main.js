@@ -15,7 +15,10 @@ renderer.setPixelRatio(Math.min(3, window.devicePixelRatio || 1));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.18;
+// Slightly down from 1.18 - the old exposure was washing out the richer, more
+// saturated palette below (everything read a bit bleached/flat regardless of
+// what colour was actually painted on it).
+renderer.toneMappingExposure = 1.06;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 app.appendChild(renderer.domElement);
@@ -33,10 +36,19 @@ window.addEventListener('resize', () => {
 
 // ---------- lighting ----------
 
-const hemi = new THREE.HemisphereLight(0xbcd9ee, 0x8c8058, 0.85);
+// Soft coastal-daylight setup: cooler sky fill against a warmer sun reads much
+// richer than a single neutral wash over everything (and gives the vertex-colour
+// palette in terrain.js/environment.js something to actually contrast against).
+// Hemi intensity brought down from 0.85 - that much flat ambient fill was
+// competing with the sun and softening every shadow/AO cue into a flat wash,
+// which is a big part of what read as "flat" to begin with.
+const hemi = new THREE.HemisphereLight(0xaad2ea, 0x776a45, 0.6);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xffe9c2, 1.85);
+// Sun brought up correspondingly (hemi's fill dropped) and warmed slightly - a
+// warm key light against the cooler sky fill is what actually separates grass/
+// rock/sand tonally instead of everything reading under the same flat wash.
+const sun = new THREE.DirectionalLight(0xffe6b8, 2.15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 1;
@@ -46,10 +58,18 @@ sun.shadow.camera.right = 34;
 sun.shadow.camera.top = 34;
 sun.shadow.camera.bottom = -34;
 sun.shadow.bias = -0.0015;
+// Reduces shadow-acne/peter-panning on the fine mesh's own bumpy micro-normals
+// (see terrain.js's fine detail noise) without softening genuine contact shadows
+// the way a larger bias would - those contact shadows at cliff bases and rock
+// cavities are one of the main cues that was reading flat before.
+sun.shadow.normalBias = 0.02;
 scene.add(sun);
 scene.add(sun.target);
 
-const sunDir = new THREE.Vector3(0.42, 0.82, 0.32).normalize();
+// Slightly lower sun angle than before (more raking, less straight-down) so
+// grass blades, rock strata and cliff faces actually pick up modelling shadows
+// instead of the flatter look a near-overhead sun gives low-relief geometry.
+const sunDir = new THREE.Vector3(0.5, 0.72, 0.47).normalize();
 
 // ---------- world ----------
 

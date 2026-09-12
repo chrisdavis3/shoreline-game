@@ -251,7 +251,13 @@ export class Terrain {
 
     this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.96,
+      // Slightly less than fully matte - real wet sand/slate near the waterline
+      // picks up a soft sheen even in overcast light, and a uniform 0.96 read as
+      // chalky/flat everywhere regardless of what colour was actually painted
+      // there. Full per-vertex roughness would need a custom shader attribute
+      // (out of scope for this colour/lighting-only pass); this uniform nudge is
+      // a safe, cheap approximation that helps every material read a bit less flat.
+      roughness: 0.88,
       metalness: 0.0,
       flatShading: false,
     });
@@ -263,19 +269,21 @@ export class Terrain {
     // fine-vertex colour evaluation (the old per-call `new THREE.Color(...)` x ~15
     // was fine at 140x140 called every 0.35s; at fine-mesh scale/frequency it isn't).
     this._pal = {
-      sand: new THREE.Color('#cdbd97'),
-      wetSand: new THREE.Color('#8f8365'),
-      mud: new THREE.Color('#4f4636'),
-      grass: new THREE.Color('#71805a'),
-      dryGrass: new THREE.Color('#95935f'),
-      rockDark: new THREE.Color('#241f1a'),
-      rockMid: new THREE.Color('#5a5346'),
-      rockLight: new THREE.Color('#8c8170'),
+      sand: new THREE.Color('#d9c49b'),             // warmer, more golden-tan (reference beach sand)
+      wetSand: new THREE.Color('#7d6c49'),          // richer, darker wet sand (was too close to dry sand)
+      mud: new THREE.Color('#3c3325'),
+      grass: new THREE.Color('#5f7a45'),            // cool, richer coastal-turf green (was flat/desaturated)
+      grassWarm: new THREE.Color('#96a04c'),        // warm, sun-bleached golden-green - real turf is never one flat green
+      dryGrass: new THREE.Color('#a89860'),
+      rockDark: new THREE.Color('#15130f'),         // near-black wet slate, not a flat brown-grey
+      rockMid: new THREE.Color('#4a4438'),
+      rockLight: new THREE.Color('#9c8f76'),        // lighter, drier rock higher up the cliff
       turnedSand: new THREE.Color('#7c6142'),      // piled/disturbed rim - lighter, "just turned"
       turnedSandDug: new THREE.Color('#4a3720'),   // freshly dug basin - darker, damp-looking
     };
     this._cBase = new THREE.Color();
     this._cTone = new THREE.Color();
+    this._cGrass = new THREE.Color();
 
     this._fineDirty = null;
     this._scanRow = 0;
@@ -573,26 +581,44 @@ export class Terrain {
     const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
     const t = (fj * FINE_CELL) / SIZE;
 
-    const base = this._cBase.copy(P.sand).lerp(P.grass, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
+    // Warm/cool grass variation: real coastal turf is never one flat green - it
+    // mottles between a cooler, shaded green and a warm, sun-bleached almost-golden
+    // tone. Driven by its own noise field (independent of the coverage masks below)
+    // so the warm/cool mix reads as natural patchiness, not banding tied to where
+    // the grass itself is placed.
+    const grassWarmth = THREE.MathUtils.clamp((n2.fbm(fx * 0.11 + 700, fz * 0.11 + 700, 3) - 0.1) * 1.5, 0, 1);
+    const grassTone = this._cGrass.copy(P.grass).lerp(P.grassWarm, grassWarmth);
+
+    const base = this._cBase.copy(P.sand).lerp(grassTone, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
     base.lerp(P.dryGrass, 0.15 * Math.max(0, 1 - t * 3));
 
     const grassPatch = THREE.MathUtils.clamp((n1.fbm(fx * 0.15 + 300, fz * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
     const clifftopGrass = THREE.MathUtils.clamp((h - 4.5) / 3.5, 0, 1)
       * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1) * grassPatch;
-    base.lerp(P.grass, clifftopGrass * 0.85);
+    base.lerp(grassTone, clifftopGrass * 0.9);
 
     const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1);
     const rockHeightT = THREE.MathUtils.clamp((h - 2) / 9, 0, 1);
     const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, rockHeightT * 0.8).lerp(P.rockDark, (1 - rockHeightT) * 0.5);
+    // Rock exposed low down, where `wet` (the water sim's own moisture field) runs
+    // high, reads as genuinely dark, wet slate - not the same flat brown-grey as
+    // the dry rock higher up the cliff face.
+    rockTone.lerp(P.rockDark, THREE.MathUtils.clamp(wet * 1.3, 0, 1) * 0.45);
     base.lerp(rockTone, rockExposure);
     if (rockExposure > 0.2) {
       const strataPhase = fi * FINE_CELL * 0.32 + h * 2.6;
       const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-      base.lerp(P.rockDark, strata * 0.32 * rockExposure);
+      base.lerp(P.rockDark, strata * 0.36 * rockExposure);
+      // Alternate bands lighten toward the dry, higher-up rock tone instead of
+      // every band only ever darkening - real sedimentary strata reads as
+      // alternating light/dark banding, not a one-directional smudge. Gated by
+      // rockHeightT so this light band only shows through on the drier rock
+      // higher up; wet rock near the waterline stays uniformly dark.
+      base.lerp(P.rockLight, (1 - strata) * 0.16 * rockExposure * rockHeightT);
       const fineStrata = Math.sin(strataPhase * 2.7 + 1.4) * 0.5 + 0.5;
-      base.lerp(P.rockDark, fineStrata * 0.14 * rockExposure);
+      base.lerp(P.rockDark, fineStrata * 0.16 * rockExposure);
     }
-    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.7);
+    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.78);
 
     const wetT = THREE.MathUtils.clamp(wet, 0, 1);
     base.lerp(P.wetSand, wetT * 0.85);

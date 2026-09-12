@@ -263,12 +263,16 @@ export function scatterProps(terrain) {
 
   // Pebbles
   const pebbleGeo = new THREE.DodecahedronGeometry(1, 0);
-  const pebbleMat = new THREE.MeshStandardMaterial({ color: '#8a8477', roughness: 0.95, flatShading: true });
+  // White base colour - per-instance colour (below) carries all the actual
+  // variation, rather than every pebble sharing one flat grey-brown.
+  const pebbleMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, flatShading: true });
   const pebbleCount = 900;
   const pebbles = new THREE.InstancedMesh(pebbleGeo, pebbleMat, pebbleCount);
   pebbles.castShadow = true;
   pebbles.receiveShadow = true;
   const dummy = new THREE.Object3D();
+  const pebbleTones = ['#8a8477', '#6f6a5c', '#9a9082', '#5c584c', '#7e7869'].map((c) => new THREE.Color(c));
+  const tmpPebble = new THREE.Color();
   let pc = 0;
   for (let n = 0; n < pebbleCount * 3 && pc < pebbleCount; n++) {
     const x = Math.random() * SIZE, z = Math.random() * SIZE * 0.85 + SIZE * 0.05;
@@ -277,14 +281,23 @@ export function scatterProps(terrain) {
     // Coves and points shift where land actually ends at this x - use the real
     // coastline instead of a flat cutoff, or pebbles end up floating in the sea
     // (in a cove) or missing from newly-exposed sand (on a point).
-    if (density < 0.05 || t > coastT(Math.round(x / CELL))) continue;
+    const coast = coastT(Math.round(x / CELL));
+    if (density < 0.05 || t > coast) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     const scale = 0.08 + Math.random() * 0.16;
     dummy.position.set(warpX(x, z), y + scale * 0.3, z);
     dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
     dummy.scale.set(scale, scale * 0.7, scale);
     dummy.updateMatrix();
-    pebbles.setMatrixAt(pc++, dummy.matrix);
+    pebbles.setMatrixAt(pc, dummy.matrix);
+    // Pebbles right at the waterline (small coast - t gap) read darker/wetter,
+    // like the real dark, damp rocks scattered at a tideline - drier ones further
+    // up the beach pick a random tone from the drier end of the palette.
+    const wetness = THREE.MathUtils.clamp(1 - (coast - t) / 0.06, 0, 1);
+    tmpPebble.copy(pebbleTones[Math.floor(Math.random() * pebbleTones.length)]);
+    tmpPebble.lerp(new THREE.Color('#2c2822'), wetness * 0.6);
+    pebbles.setColorAt(pc, tmpPebble);
+    pc++;
   }
   pebbles.count = pc;
   group.add(pebbles);
@@ -293,23 +306,29 @@ export function scatterProps(terrain) {
   // read as ground texture rather than as standalone objects.
   const bladeGeo = new THREE.ConeGeometry(0.035, 0.34, 3, 1, true);
   bladeGeo.translate(0, 0.17, 0);
+  // White base colour - per-instance colour (below) supplies the actual warm/cool
+  // variation real grass has, rather than every blade sharing one flat green.
   const grassMat = new THREE.MeshStandardMaterial({
-    color: '#748254', roughness: 0.95, flatShading: true, side: THREE.DoubleSide,
+    color: '#ffffff', roughness: 0.92, flatShading: true, side: THREE.DoubleSide,
   });
-  const grassCount = 1900;
+  const grassCool = new THREE.Color('#5f7a45');
+  const grassWarmC = new THREE.Color('#9aa250');
+  const tmpBlade = new THREE.Color();
+  const grassCount = 3200;
   const grass = new THREE.InstancedMesh(bladeGeo, grassMat, grassCount);
   let gc = 0;
-  for (let n = 0; n < grassCount * 2.2 && gc < grassCount; n++) {
+  for (let n = 0; n < grassCount * 2.4 && gc < grassCount; n++) {
     const cx = Math.random() * SIZE, cz = Math.random() * SIZE * 0.42;
     const t = cz / SIZE;
     const duneMask = Math.exp(-Math.pow((t - 0.12) / 0.11, 2)) + Math.exp(-Math.pow((t - 0.30) / 0.09, 2)) * 0.6;
     const density = decoNoise.fbm(cx * 0.06 + 12, cz * 0.06 + 12, 3) * 0.5 + 0.5;
-    if (duneMask * density < 0.48) continue;
-    // small clumps: place a handful of blades close together per accepted spot
-    const clumpSize = 1 + Math.floor(Math.random() * 2);
+    if (duneMask * density < 0.4) continue;
+    // Denser clumps (was 1-2 blades, now 2-4) so the dunes read as lush turf
+    // rather than sparse scattered dots.
+    const clumpSize = 2 + Math.floor(Math.random() * 3);
     for (let c = 0; c < clumpSize && gc < grassCount; c++) {
-      const x = cx + (Math.random() - 0.5) * 0.55;
-      const z = cz + (Math.random() - 0.5) * 0.55;
+      const x = cx + (Math.random() - 0.5) * 0.6;
+      const z = cz + (Math.random() - 0.5) * 0.6;
       const y = terrain.sampleHeightBilinear(x, z);
       const scaleY = 0.55 + Math.random() * 0.75;
       const scaleXZ = 0.7 + Math.random() * 0.6;
@@ -318,12 +337,59 @@ export function scatterProps(terrain) {
       dummy.scale.set(scaleXZ, scaleY, scaleXZ);
       dummy.updateMatrix();
       grass.setMatrixAt(gc, dummy.matrix);
+      const warmth = decoNoise.fbm(x * 0.15 + 700, z * 0.15 + 700, 2) * 0.5 + 0.5;
+      tmpBlade.copy(grassCool).lerp(grassWarmC, warmth).multiplyScalar(0.85 + Math.random() * 0.3);
+      grass.setColorAt(gc, tmpBlade);
       gc++;
     }
   }
   grass.count = gc;
   grass.castShadow = false;
   group.add(grass);
+
+  // Clifftop grass: the headlands rise well above the beach and, in the real
+  // place, are capped in real turf - terrain.js's own vertex colouring tints this
+  // (see clifftopGrass there), but a flat colour tint alone reads as a green-washed
+  // rock cap next to the dune tufts' actual 3D blades. Scatter the same blade prop
+  // across any sufficiently high, gentle-sloped ground (not just the inland dune
+  // band above), so the clifftops read as real lush grass, not sparse dots on rock.
+  const cliffGrassCount = 1800;
+  const cliffGrass = new THREE.InstancedMesh(bladeGeo, grassMat, cliffGrassCount);
+  let cgc = 0;
+  for (let n = 0; n < cliffGrassCount * 6 && cgc < cliffGrassCount; n++) {
+    const cx = Math.random() * SIZE, cz = Math.random() * SIZE;
+    const y = terrain.sampleHeightBilinear(cx, cz);
+    if (y < 4.5) continue; // matches terrain.js's own clifftopGrass height threshold
+    const eps = 0.6;
+    const hx1 = terrain.sampleHeightBilinear(cx + eps, cz), hx0 = terrain.sampleHeightBilinear(cx - eps, cz);
+    const hz1 = terrain.sampleHeightBilinear(cx, cz + eps), hz0 = terrain.sampleHeightBilinear(cx, cz - eps);
+    const slope = (Math.abs(hx1 - hx0) + Math.abs(hz1 - hz0)) / (4 * eps);
+    if (slope > 0.42) continue; // too steep - bare cliff face, not turf
+    const density = decoNoise.fbm(cx * 0.15 + 300, cz * 0.15 + 300, 3);
+    if (density < 0.25) continue;
+    const clumpSize = 2 + Math.floor(Math.random() * 3);
+    for (let c = 0; c < clumpSize && cgc < cliffGrassCount; c++) {
+      const x = cx + (Math.random() - 0.5) * 0.6;
+      const z = cz + (Math.random() - 0.5) * 0.6;
+      const yy = terrain.sampleHeightBilinear(x, z);
+      const scaleY = 0.6 + Math.random() * 0.8;
+      const scaleXZ = 0.75 + Math.random() * 0.6;
+      dummy.position.set(warpX(x, z), yy, z);
+      dummy.rotation.set((Math.random() - 0.5) * 0.5, Math.random() * Math.PI, (Math.random() - 0.5) * 0.5);
+      dummy.scale.set(scaleXZ, scaleY, scaleXZ);
+      dummy.updateMatrix();
+      cliffGrass.setMatrixAt(cgc, dummy.matrix);
+      // Clifftops catch more open sky/sun than the sheltered dune band, so bias
+      // warmer/golder on average - matches the reference photos' sunlit headland turf.
+      const warmth = decoNoise.fbm(x * 0.15 + 700, z * 0.15 + 700, 2) * 0.5 + 0.65;
+      tmpBlade.copy(grassCool).lerp(grassWarmC, THREE.MathUtils.clamp(warmth, 0, 1)).multiplyScalar(0.85 + Math.random() * 0.3);
+      cliffGrass.setColorAt(cgc, tmpBlade);
+      cgc++;
+    }
+  }
+  cliffGrass.count = cgc;
+  cliffGrass.castShadow = false;
+  group.add(cliffGrass);
 
   // Driftwood
   const woodGeo = new THREE.CylinderGeometry(0.09, 0.13, 2.4, 6);
@@ -393,12 +459,17 @@ export function buildSkirt(terrain) {
   // does (dark, strata-banded slate, grass only right at the top) rather than
   // a flat green wall - a real Cornish headland doesn't turn into a green
   // hillside a few metres past the sand, it keeps being cliff for a long way.
-  const rockDark = new THREE.Color('#241f1a');
-  const rockMid = new THREE.Color('#57503f');
-  const rockLight = new THREE.Color('#877c6a');
-  const grassPatch = new THREE.Color('#5e6b48');
-  const farHill = new THREE.Color('#7c8d84'); // distant hills, hazed by atmospheric perspective
+  // Palette matched to terrain.js's own upgraded rock/grass tones so the real
+  // (simulated) terrain and this decorative surround read as one continuous
+  // material, not two different-looking rock types stitched together.
+  const rockDark = new THREE.Color('#15130f');
+  const rockMid = new THREE.Color('#4a4438');
+  const rockLight = new THREE.Color('#9c8f76');
+  const grassPatch = new THREE.Color('#526b3a');
+  const grassWarm = new THREE.Color('#8fa04a'); // warm, sun-bleached variant - see terrain.js's grassWarmth
+  const farHill = new THREE.Color('#7f9296'); // distant hills, hazed by atmospheric perspective
   const tmpC = new THREE.Color();
+  const tmpGrass = new THREE.Color();
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
@@ -441,14 +512,24 @@ export function buildSkirt(terrain) {
     const strataPhase = x * 0.3 + y * 2.4;
     const strata = Math.sin(strataPhase) * 0.5 + 0.5;
     const fineStrata = Math.sin(strataPhase * 2.6 + 1.1) * 0.5 + 0.5;
-    tmpC.copy(rockMid).lerp(rockLight, THREE.MathUtils.clamp(y / 55, 0, 1) * 0.7);
-    tmpC.lerp(rockDark, strata * 0.3 + fineStrata * 0.13);
+    const heightT = THREE.MathUtils.clamp(y / 55, 0, 1);
+    tmpC.copy(rockMid).lerp(rockLight, heightT * 0.7);
+    tmpC.lerp(rockDark, strata * 0.34 + fineStrata * 0.15);
+    // Alternate bands lighten toward the drier, higher rock tone (matches the
+    // same real-strata technique in terrain.js's _colorAt) instead of every band
+    // only ever darkening toward black - reads as actual banded rock, not a smudge.
+    tmpC.lerp(rockLight, (1 - strata) * 0.15 * heightT);
     // Grass only right at the very top of the rise, in noise-patches (not a
-    // uniform cap) - most of the visible height stays bare rock.
+    // uniform cap) - most of the visible height stays bare rock. Mixed warm/cool
+    // per its own noise field, same technique as the real terrain's clifftop grass,
+    // so this decorative surround doesn't read as a flatter single-tone green next
+    // to the real, richer-coloured terrain right beside it.
     const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
+    const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
     const grassAmount = THREE.MathUtils.clamp((y - 34) / 14, 0, 1)
       * THREE.MathUtils.clamp((grassPatchNoise - 0.15) * 2.2, 0, 1);
-    tmpC.lerp(grassPatch, grassAmount * 0.8);
+    tmpGrass.copy(grassPatch).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
+    tmpC.lerp(tmpGrass, grassAmount * 0.85);
     // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.
     tmpC.lerp(farHill, distT * distT * 0.55);
     colors[i * 3] = tmpC.r; colors[i * 3 + 1] = tmpC.g; colors[i * 3 + 2] = tmpC.b;
@@ -456,7 +537,7 @@ export function buildSkirt(terrain) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
 
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = false;
   mesh.renderOrder = -1;
