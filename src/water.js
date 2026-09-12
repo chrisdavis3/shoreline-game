@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=52';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=53';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -540,27 +540,51 @@ export class WaterSim {
 
         const sumD = dR + dL + dU + dD;
         if (sumD <= 1e-6) continue;
-        // Lowered from 0.22. For a plain linear 4-neighbour diffusion update, the highest-
-        // frequency (Nyquist, alternating +/- every cell) error mode has amplification factor
-        // (1 - 8*rate) per step: 0.25 (the figure this used to cite) is only where the mode
-        // stops being BOUNDED, but anywhere in (0.125, 0.25) it still decays only by flipping
-        // sign every step - a slowly-fading checkerboard rather than a clean one. That's a
-        // real effect here and this lower cap measurably shrinks it. BUT: measured live
-        // (window.__game.water.depth through the actual river channel, at rate=0.12, after
-        // 100+s of simulated time) it does NOT fully eliminate the reported checkerboard -
-        // adjacent columns still swing between ~0.02 and ~0.24. That's because this scheme
-        // isn't quite the linear case the 1/8 threshold assumes: it only ever sends water
-        // toward a STRICTLY lower neighbour (max(0, H-neighbour)), so a channel thalweg -
-        // locally lowest across its cross-section, by definition - is a pure receiver from
-        // its banks until it fills just enough to flip to being a pure sender the very next
-        // step, relaying back and forth between two near-symmetric cells rather than easing
-        // toward their mean. Lowering `rate` shrinks that relay's amplitude but can't remove
-        // it, since it isn't a smooth-diffusion mode being damped - see the post-update blur
-        // pass further down (after flow speed is computed) for the actual fix, which targets
-        // this specific relay pattern directly. This cap is kept anyway: it's a real, free
-        // (same op count, just a smaller constant) improvement with no downside, just not
-        // sufficient alone.
+        // Lowered from 0.22 (see the per-link equalisation-cap fix just below for the actual
+        // root-cause fix - this alone is a real but insufficient improvement, kept for its own
+        // sake). For a plain linear 4-neighbour diffusion update, the highest-frequency
+        // (Nyquist, alternating +/- every cell) error mode has amplification factor
+        // (1 - 8*rate) per step: 0.25 is only where the mode stops being BOUNDED, but anywhere
+        // in (0.125, 0.25) it still decays only by flipping sign every step. Measured live
+        // this shrinks the checkerboard's amplitude but does not remove it, because the actual
+        // mechanism (below) isn't this linear mode at all.
         const rate = Math.min(0.12, RATE * dt);
+
+        // How many neighbours this cell is simultaneously sending to. Matters for the
+        // per-link cap just below - see its comment for why.
+        const activeCount = (dR > 0 ? 1 : 0) + (dL > 0 ? 1 : 0) + (dU > 0 ? 1 : 0) + (dD > 0 ? 1 : 0);
+
+        // ROOT-CAUSE FIX for the persistent river checkerboard/crenellation (confirmed live,
+        // repeatedly, at multiple cells far from the source: window.__game.water/terrain
+        // instrumented step-by-step showed a cell's own H alternating in a clean, UNDAMPED
+        // period-2 cycle - e.g. 3.079, 3.086, 3.079, 3.085, ... - forever, not decaying, at
+        // any rate cap or with the post-update blur pass further down both already in place).
+        // That blur pass (and the rate cap above) only fight the SYMPTOM after the fact; this
+        // is the actual source. The per-link cap used to be a flat `dR * CELL_AREA * 0.5`:
+        // for an ISOLATED pair of cells with only ONE active downhill link, moving exactly
+        // half of a height difference in one step is provably exact - it lands precisely on
+        // the two cells' shared equilibrium, no more, no less (H_new_A - H_new_B algebraically
+        // simplifies to exactly 0). The bug: this per-link cap was computed independently for
+        // EACH of up to 4 directions, all from the same start-of-step H - so a cell with two or
+        // more simultaneously active downhill neighbours sends each of them "half of MY
+        // difference with THEM" without accounting for the water it's ALSO handing to the
+        // OTHER neighbour(s) at the same time. Each individual link is safe in isolation, but
+        // the combination overshoots the true multi-way equilibrium (the sender's H drops by
+        // more than any one neighbour's calculation assumed), and next step the roles reverse -
+        // a real, self-sustaining relay, not a decaying transient. It's not the classic
+        // Nyquist/diffusion mode the `rate` cap above targets, which is why lowering that
+        // alone couldn't remove it; and it's driven fresh every step by whatever is currently
+        // perturbing H (channel-carving erosion changes bedrock height every single step), so
+        // a periodic corrective blur fighting it from OUTSIDE the transfer step can damp the
+        // symptom but can't outrun a continuously-regenerating source - confirmed live: with
+        // only the blur+rate-cap fixes, the checkerboard visibly regrew to full severity after
+        // several real minutes of play as erosion kept re-perturbing the bed. Dividing the cap
+        // by activeCount gives each simultaneously-active link its fair share of the sender's
+        // one-step "equalising budget" instead of letting each claim a full independent half-
+        // share, so the joint result can no longer overshoot the true multi-way equilibrium
+        // regardless of how long erosion keeps disturbing it. Reduces to the exact original,
+        // already-correct behaviour whenever only one direction is active (the common case).
+        const linkCap = (CELL_AREA * 0.5) / activeCount;
 
         // A rock's obstruction halo resists flow along a link if EITHER end sits in
         // it - not just flow leaving an obstructed cell, but flow trying to enter one
@@ -568,10 +592,10 @@ export class WaterSim {
         // large boulder into a real partial dam: flow toward/through its halo is
         // throttled, so water backs up on the upstream side and gets pushed toward
         // whatever unobstructed link is left (splitting around it, or a new route).
-        if (dR > 0) fR[k] = Math.min(available * (dR / sumD) * rate, dR * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kR]) * 0.92);
-        if (dL > 0) fL[k] = Math.min(available * (dL / sumD) * rate, dL * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kL]) * 0.92);
-        if (dU > 0) fU[k] = Math.min(available * (dU / sumD) * rate, dU * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kU]) * 0.92);
-        if (dD > 0) fD[k] = Math.min(available * (dD / sumD) * rate, dD * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kD]) * 0.92);
+        if (dR > 0) fR[k] = Math.min(available * (dR / sumD) * rate, dR * linkCap) * (1 - Math.max(obK, obstruction[kR]) * 0.92);
+        if (dL > 0) fL[k] = Math.min(available * (dL / sumD) * rate, dL * linkCap) * (1 - Math.max(obK, obstruction[kL]) * 0.92);
+        if (dU > 0) fU[k] = Math.min(available * (dU / sumD) * rate, dU * linkCap) * (1 - Math.max(obK, obstruction[kU]) * 0.92);
+        if (dD > 0) fD[k] = Math.min(available * (dD / sumD) * rate, dD * linkCap) * (1 - Math.max(obK, obstruction[kD]) * 0.92);
       }
     }
 
@@ -596,17 +620,21 @@ export class WaterSim {
       }
     }
 
-    // A touch of numerical damping: the 4-neighbour Jacobi update above is prone to a
-    // standing checkerboard oscillation - not the classic linear-diffusion Nyquist mode
-    // (that would just need a lower transfer `rate` above - tried, and confirmed live it
-    // only shrinks the swing, doesn't remove it), but a rectified relay effect specific to
-    // this max(0, H-neighbour)-only scheme: a channel thalweg is (by definition) locally
-    // lowest across its cross-section, so it can only ever be a pure receiver from its banks
-    // in that axis until it fills just enough to become a pure sender the very next step -
-    // flip-flopping between the two rather than easing toward the mean, at whichever cell of
-    // a near-symmetric pair happens to sit a hair deeper. A light blur toward the local
-    // average kills exactly that highest-frequency pattern without visibly affecting real
-    // flow or pooling.
+    // A touch of numerical damping, kept as a SECONDARY safety net after the real fix above
+    // (the per-link `linkCap` division by `activeCount`). This blur was the first fix tried
+    // for the reported river checkerboard/crenellation, and on its own it looked like it had
+    // worked (confirmed live right after landing) - but verified over a much longer live
+    // session (~470s+ of real play), the checkerboard fully regrew to its original severity.
+    // Root cause turned out to be upstream of this pass entirely (see the long comment on
+    // `linkCap` above): a genuine, UNDAMPED per-step relay in the primary transfer step
+    // itself, continuously re-excited by erosion changing bedrock height every step, which
+    // this after-the-fact blur could only ever partially cancel each step - fine while the
+    // relay was weak, overwhelmed once erosion had run long enough to keep driving it harder.
+    // With `linkCap` fixing that at the source (verified: a cell's own H no longer alternates
+    // step to step, and the channel-wide oscillation metric stays flat over 600+s of simulated
+    // time instead of growing), this pass is no longer load-bearing for the original bug - but
+    // it's cheap, provably mass-conserving (see below), and a reasonable extra safety margin
+    // for whatever small residual noise remains, so it stays.
     //
     // Confirmed live (window.__game.water.depth sampled through the river channel) that this
     // was previously gated to depth > 0.25, specifically to protect a thin trickle crossing
