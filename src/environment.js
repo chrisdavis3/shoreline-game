@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=51';
-import { Noise2D } from './noise.js?v=51';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=52';
+import { Noise2D } from './noise.js?v=52';
 
 const decoNoise = new Noise2D(555);
 
@@ -442,18 +442,46 @@ export function scatterProps(terrain) {
   return group;
 }
 
+// Builds a 1D list of sample coordinates covering [lo, hi]: a fine, uniform
+// "core" band from coreLo to coreHi (coreStep apart), then geometrically
+// growing steps out to lo/hi on either side. Used below so the skirt's mesh
+// resolution is dense right where it actually has to trace the real terrain's
+// warped boundary (see the TESTING_FEEDBACK.md note on a visible sky/gap seam
+// there - the skirt used to be a uniform ~10m/cell grid, far too coarse to
+// follow a boundary that moves by double-digit metres over a much shorter
+// span) while staying cheap everywhere else (the distant decorative hills
+// don't need to trace anything, just look plausible from a distance).
+function buildAxisSamples(lo, hi, coreLo, coreHi, coreStep, growth) {
+  const mid = [];
+  for (let v = coreLo; v <= coreHi + 1e-6; v += coreStep) mid.push(v);
+  const left = [];
+  { let v = coreLo, step = coreStep; while (v > lo) { step *= growth; v -= step; left.push(v); } }
+  left.reverse();
+  const right = [];
+  { let v = coreHi, step = coreStep; while (v < hi) { step *= growth; v += step; right.push(v); } }
+  return [lo, ...left, ...mid, ...right, hi];
+}
+
 // A large low-poly surrounding landscape so zooming out reveals rolling hills
 // rather than the hard edge of the terrain plane against the sky. Purely
 // decorative - no simulation, no collision.
 export function buildSkirt(terrain) {
   const span = SIZE * 5;
-  const seg = 56;
-  const geo = new THREE.PlaneGeometry(span, span, seg, seg);
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(SIZE / 2, 0, SIZE / 2);
+  const halfSpan = span / 2;
+  // Dense core band spans a bit past the real terrain's own extent on every
+  // side (where the warped boundary and the dune-line/sea-edge transitions
+  // actually live) at ~1.5m/sample - roughly 7x finer than the old uniform
+  // 56-segment grid (~10.25m/sample) - then grows geometrically out to the
+  // full span, which only ever needs to look right from a distance.
+  const coreStep = 1.5;
+  const growth = 1.4;
+  const xs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.25, SIZE * 1.25, coreStep, growth);
+  const zs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.25, SIZE * 1.25, coreStep, growth);
+  const nx = xs.length, nz = zs.length;
 
-  const pos = geo.attributes.position;
-  const colors = new Float32Array(pos.count * 3);
+  const positions = new Float32Array(nx * nz * 3);
+  const colors = new Float32Array(nx * nz * 3);
+  const uvs = new Float32Array(nx * nz * 2);
   // This surround is what's actually visible flanking the beach at any real
   // distance, so it needs to read as the SAME coastline the real terrain
   // does (dark, strata-banded slate, grass only right at the top) rather than
@@ -471,70 +499,93 @@ export function buildSkirt(terrain) {
   const tmpC = new THREE.Color();
   const tmpGrass = new THREE.Color();
 
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), z = pos.getZ(i);
+  for (let jz = 0; jz < nz; jz++) {
+    const z = zs[jz];
     // The real terrain's own left/right edges now taper inward toward the dune
     // line (see terrain.js warpX/insetCells) instead of running the full [0, SIZE]
-    // width - use those same warped bounds here, or this hill rise would only
-    // start at the old, wider fixed edges and leave a visible gap of nothing
-    // between the narrowed sand and the rising background.
+    // width - use those exact same per-side warped bounds here (insetCells is
+    // no longer symmetric - each side reads its own real coastline data), or
+    // this hill rise would only start at the old, wider fixed edges and leave
+    // a visible gap of nothing between the narrowed sand and the rising
+    // background.
     const t = z / SIZE;
-    const insetAmount = insetCells(t) * 0.8 * CELL; // matches warpX's own inset exactly
-    const left = insetAmount, right = SIZE - insetAmount;
-    const dxOut = Math.max(0, left - x, x - right);
+    const leftInset = insetCells(0, t) * 0.8 * CELL;
+    const rightInset = insetCells(GRID - 1, t) * 0.8 * CELL;
+    const left = leftInset, right = SIZE - rightInset;
     const dzLand = Math.max(0, -z);
     const dzSea = Math.max(0, z - SIZE);
-    const outside = Math.max(dxOut, dzLand);
 
-    let y;
-    if (outside <= 0 && dzSea <= 0) {
-      // directly under the real (simulated) terrain - hide it away entirely
-      y = -60;
-    } else if (dzSea > 0 && outside <= 0) {
-      // seaward beyond the beach - sink below the ocean surface so it's hidden
-      y = -6 - dzSea * 0.4;
-    } else {
-      const n = decoNoise.fbm(x * 0.012, z * 0.012, 4);
-      const rise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
-      const edgeY = terrain.sampleHeightBilinear(
-        THREE.MathUtils.clamp(x, 1, SIZE - 1),
-        THREE.MathUtils.clamp(z, 1, SIZE - 1),
-      );
-      y = edgeY + rise * (26 + n * 14);
-      if (dzSea > 0) y -= dzSea * 0.6; // taper down toward the sea horizon at the far corners
+    for (let ix = 0; ix < nx; ix++) {
+      const x = xs[ix];
+      const k = jz * nx + ix;
+      const dxOut = Math.max(0, left - x, x - right);
+      const outside = Math.max(dxOut, dzLand);
+
+      let y;
+      if (outside <= 0 && dzSea <= 0) {
+        // directly under the real (simulated) terrain - hide it away entirely
+        y = -60;
+      } else if (dzSea > 0 && outside <= 0) {
+        // seaward beyond the beach - sink below the ocean surface so it's hidden
+        y = -6 - dzSea * 0.4;
+      } else {
+        const n = decoNoise.fbm(x * 0.012, z * 0.012, 4);
+        const rise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
+        const edgeY = terrain.sampleHeightBilinear(
+          THREE.MathUtils.clamp(x, 1, SIZE - 1),
+          THREE.MathUtils.clamp(z, 1, SIZE - 1),
+        );
+        y = edgeY + rise * (26 + n * 14);
+        if (dzSea > 0) y -= dzSea * 0.6; // taper down toward the sea horizon at the far corners
+      }
+      positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
+      uvs[k * 2] = ix / (nx - 1); uvs[k * 2 + 1] = jz / (nz - 1);
+
+      const distT = THREE.MathUtils.clamp(outside / (SIZE * 1.1), 0, 1);
+      // Diagonal strata, same technique as the real cliff face: mixing x into the
+      // phase alongside height tilts the bands into sloped strata instead of
+      // horizontal rings.
+      const strataPhase = x * 0.3 + y * 2.4;
+      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+      const fineStrata = Math.sin(strataPhase * 2.6 + 1.1) * 0.5 + 0.5;
+      const heightT = THREE.MathUtils.clamp(y / 55, 0, 1);
+      tmpC.copy(rockMid).lerp(rockLight, heightT * 0.7);
+      tmpC.lerp(rockDark, strata * 0.34 + fineStrata * 0.15);
+      // Alternate bands lighten toward the drier, higher rock tone (matches the
+      // same real-strata technique in terrain.js's _colorAt) instead of every band
+      // only ever darkening toward black - reads as actual banded rock, not a smudge.
+      tmpC.lerp(rockLight, (1 - strata) * 0.15 * heightT);
+      // Grass only right at the very top of the rise, in noise-patches (not a
+      // uniform cap) - most of the visible height stays bare rock. Mixed warm/cool
+      // per its own noise field, same technique as the real terrain's clifftop grass,
+      // so this decorative surround doesn't read as a flatter single-tone green next
+      // to the real, richer-coloured terrain right beside it.
+      const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
+      const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
+      const grassAmount = THREE.MathUtils.clamp((y - 34) / 14, 0, 1)
+        * THREE.MathUtils.clamp((grassPatchNoise - 0.15) * 2.2, 0, 1);
+      tmpGrass.copy(grassPatch).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
+      tmpC.lerp(tmpGrass, grassAmount * 0.85);
+      // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.
+      tmpC.lerp(farHill, distT * distT * 0.55);
+      colors[k * 3] = tmpC.r; colors[k * 3 + 1] = tmpC.g; colors[k * 3 + 2] = tmpC.b;
     }
-    pos.setY(i, y);
-
-    const distT = THREE.MathUtils.clamp(outside / (SIZE * 1.1), 0, 1);
-    // Diagonal strata, same technique as the real cliff face: mixing x into the
-    // phase alongside height tilts the bands into sloped strata instead of
-    // horizontal rings.
-    const strataPhase = x * 0.3 + y * 2.4;
-    const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-    const fineStrata = Math.sin(strataPhase * 2.6 + 1.1) * 0.5 + 0.5;
-    const heightT = THREE.MathUtils.clamp(y / 55, 0, 1);
-    tmpC.copy(rockMid).lerp(rockLight, heightT * 0.7);
-    tmpC.lerp(rockDark, strata * 0.34 + fineStrata * 0.15);
-    // Alternate bands lighten toward the drier, higher rock tone (matches the
-    // same real-strata technique in terrain.js's _colorAt) instead of every band
-    // only ever darkening toward black - reads as actual banded rock, not a smudge.
-    tmpC.lerp(rockLight, (1 - strata) * 0.15 * heightT);
-    // Grass only right at the very top of the rise, in noise-patches (not a
-    // uniform cap) - most of the visible height stays bare rock. Mixed warm/cool
-    // per its own noise field, same technique as the real terrain's clifftop grass,
-    // so this decorative surround doesn't read as a flatter single-tone green next
-    // to the real, richer-coloured terrain right beside it.
-    const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
-    const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
-    const grassAmount = THREE.MathUtils.clamp((y - 34) / 14, 0, 1)
-      * THREE.MathUtils.clamp((grassPatchNoise - 0.15) * 2.2, 0, 1);
-    tmpGrass.copy(grassPatch).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
-    tmpC.lerp(tmpGrass, grassAmount * 0.85);
-    // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.
-    tmpC.lerp(farHill, distT * distT * 0.55);
-    colors[i * 3] = tmpC.r; colors[i * 3 + 1] = tmpC.g; colors[i * 3 + 2] = tmpC.b;
   }
+
+  const indices = [];
+  for (let jz = 0; jz < nz - 1; jz++) {
+    for (let ix = 0; ix < nx - 1; ix++) {
+      const a = jz * nx + ix, b = jz * nx + ix + 1;
+      const c = (jz + 1) * nx + ix, d = (jz + 1) * nx + ix + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
   geo.computeVertexNormals();
 
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true });

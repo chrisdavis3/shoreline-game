@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=51';
+import { Noise2D } from './noise.js?v=52';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -36,11 +36,11 @@ function idx(i, j) { return j * GRID + i; }
 // 0.78, i.e. the same ~31-cell margin from the NORTH edge (i=GRID-1) this
 // time - rather than pushing all the way out to the literal i~137 the real
 // mouth projects to. Going any closer to the edge than that runs the stream
-// into insetCells()'s dune-line taper band below (up to 22 cells wide at
-// t=0), which would re-introduce the exact "wizard hat" pinch that band was
-// built to avoid (see insetCells' own comment). 31 cells of margin keeps the
-// stream clear of it at every t, same as the old placement did on the other
-// side.
+// into insetCells()'s dune-line taper band below (up to ~17 cells wide at
+// t=0, see insetCells' own comment for the exact current figure), which would
+// re-introduce the exact "wizard hat" pinch that band was built to avoid (see
+// insetCells' own comment). 31 cells of margin keeps the stream clear of it at
+// every t, same as the old placement did on the other side.
 function streamCenterX(z) {
   const t = z / SIZE;
   return SIZE * 0.78 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
@@ -97,6 +97,20 @@ export function coastT(i) {
   return REAL_COAST_T[THREE.MathUtils.clamp(Math.round(i), 0, GRID - 1)];
 }
 
+// Smoothly interpolated coastT for use where the caller needs a continuous
+// curve across columns (avoids a staircase every integer i) - coastT() itself
+// intentionally rounds, since most callers index one specific simulation
+// column, but insetCells() below evaluates at continuous fractional i (fine
+// render-mesh spacing), so it needs the in-between values too.
+function coastTSmooth(i) {
+  const ci = THREE.MathUtils.clamp(i, 0, GRID - 1);
+  const i0 = Math.floor(ci), i1 = Math.min(GRID - 1, i0 + 1);
+  const f = ci - i0;
+  return REAL_COAST_T[i0] + (REAL_COAST_T[i1] - REAL_COAST_T[i0]) * f;
+}
+
+const edgeRoughNoise = new Noise2D(2718);
+
 // The level's own physical footprint was still a perfect square in world space
 // no matter how the sand/rock/sea classification varied within it - every
 // depth row spanned the full [0, SIZE] width, so the mesh always ended in a
@@ -106,29 +120,74 @@ export function coastT(i) {
 // centre) by that same factor, so ITS width visibly tapered to a point near
 // the dune line (an unwanted "wizard hat" on the river) while the actual sand
 // edge, softened by noise, read as a vague round blob instead of a specific
-// outline. This only touches vertices within insetCells() of whichever side
-// edge is nearest - the stream (now ~31 cells in from i=GRID-1, see
-// streamCenterX - it was ~31 cells in from i=0 before the river-side fix) is
-// safely outside that band at every depth, so it renders exactly as the
-// water sim computes it. Only x is warped (z/depth untouched), and only
-// render positions - the (i, j) simulation grid underneath stays a rectangle.
-export function insetCells(t) {
-  const wt = THREE.MathUtils.clamp(t / 0.30, 0, 1);
-  return 22 * (1 - Math.pow(wt, 1.4));
+// outline.
+//
+// SECOND attempt (this one superseded too - see TESTING_FEEDBACK.md and the
+// user's own screenshots) only touched vertices within a band of the nearest
+// side edge, sized purely from t (depth) - 22 cells right at the dune line,
+// fading to 0 by a fixed t=0.30, identical on both sides regardless of what
+// either real headland actually looks like. That produced a big, clean,
+// perfectly symmetric diagonal wedge at each inland corner ("big triangular
+// inlets") with NO relationship to the real coastline data already driving
+// the sand/rock/sea colouring - the taper was the one part of the level's
+// silhouette that was still, literally, generic.
+//
+// THIS version ties the same mechanism to the real per-column data instead:
+// insetCells(i, t) below reads THIS column's own real coastline depth
+// (coastTSmooth(i), the same REAL_COAST_T data _generate() uses for
+// sand/rock/sea and for cliffPotential/nearCoastT). A column whose real
+// coastline already sits close to the dune line (low coastT - a narrow rocky
+// point with almost no beach in front of it, like the literal i=0/i=GRID-1
+// headland columns here) tapers in harder and resolves later; a column with a
+// wide sandy apron in front of it (high coastT) stays close to full width
+// almost immediately. Evaluated per-vertex (not once per edge), so the two
+// sides need not behave identically, and a little organic noise breaks the
+// curve up so it reads as an uneven natural edge rather than one clean
+// geometric wedge. Peak width and reach are deliberately kept modest (well
+// under the old 22-cell/t=0.30 figures) - the point of this taper is only to
+// round off the literal inland corner without a jarring right angle; the
+// actual organic bay/headland shape should come from the real coastline
+// colouring and cliff relief, not from this seam being a competing shape in
+// its own right.
+//
+// Still only touches vertices within insetCells() of whichever side edge is
+// nearest - the stream (now ~31 cells in from i=GRID-1, see streamCenterX -
+// it was ~31 cells in from i=0 before the river-side fix) stays safely outside
+// this band at every depth (max reach below is ~17 cells), so it renders
+// exactly as the water sim computes it. Only x is warped (z/depth untouched),
+// and only render positions - the (i, j) simulation grid underneath stays a
+// rectangle.
+export function insetCells(i, t) {
+  const ct = coastTSmooth(i);
+  // 0 = a narrow rocky point (real coastline already close to the dune line),
+  // 1 = a wide sandy apron in front of this column.
+  const openness = THREE.MathUtils.clamp((ct - 0.35) / 0.45, 0, 1);
+  const peakInset = 16 - 6 * openness;       // 10-16 cells right at the dune line
+  const taperEndT = 0.10 + 0.06 * openness;  // fully resolved to full width by this t
+  const wt = THREE.MathUtils.clamp(t / taperEndT, 0, 1);
+  const base = peakInset * (1 - Math.pow(wt, 1.4));
+  // Organic irregularity, faded out at both ends of the band (wt=0 right at
+  // the dune line, where the boundary must stay exact and predictable, and
+  // wt=1 where it's already resolved to full width) so it can only roughen
+  // the taper's middle, never widen it past its own peak or reopen it once
+  // resolved.
+  const rough = edgeRoughNoise.fbm(i * 0.15, t * 14, 2) * 2.6 * wt * (1 - wt);
+  return Math.max(0, base + rough);
 }
 
 export function warpX(x, z) {
   const t = z / SIZE;
-  const blendWidth = insetCells(t);
-  if (blendWidth <= 0.001) return x;
   const i = x / CELL;
-  const edgeDist = Math.min(i, GRID - 1 - i);
+  const side = i < (GRID - 1) / 2 ? 0 : 1; // 0 = south edge (i=0), 1 = north edge (i=GRID-1)
+  const edgeDist = side === 0 ? i : (GRID - 1 - i);
+  const blendWidth = insetCells(i, t);
+  if (blendWidth <= 0.001) return x;
   if (edgeDist >= blendWidth) return x; // safely inside the untouched middle - stream lives here
   const insetAmount = blendWidth * 0.8; // how far the true edge itself gets pulled inward
   const localT = edgeDist / blendWidth; // 0 at the literal edge, 1 at the blend boundary
   const eased = Math.pow(localT, 0.7);
   const newEdgeDist = insetAmount + (blendWidth - insetAmount) * eased; // monotonic, continuous at the blend boundary
-  const newI = i < (GRID - 1) / 2 ? newEdgeDist : (GRID - 1) - newEdgeDist;
+  const newI = side === 0 ? newEdgeDist : (GRID - 1) - newEdgeDist;
   return newI * CELL;
 }
 
