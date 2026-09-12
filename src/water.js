@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=49';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=50';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -540,10 +540,27 @@ export class WaterSim {
 
         const sumD = dR + dL + dU + dD;
         if (sumD <= 1e-6) continue;
-        // Capped well under the 2D explicit-diffusion stability limit (~0.25 of available
-        // water moving per step) - above that, simultaneous 4-neighbour transfers overshoot
-        // and ping-pong into a checkerboard oscillation instead of settling.
-        const rate = Math.min(0.22, RATE * dt);
+        // Lowered from 0.22. For a plain linear 4-neighbour diffusion update, the highest-
+        // frequency (Nyquist, alternating +/- every cell) error mode has amplification factor
+        // (1 - 8*rate) per step: 0.25 (the figure this used to cite) is only where the mode
+        // stops being BOUNDED, but anywhere in (0.125, 0.25) it still decays only by flipping
+        // sign every step - a slowly-fading checkerboard rather than a clean one. That's a
+        // real effect here and this lower cap measurably shrinks it. BUT: measured live
+        // (window.__game.water.depth through the actual river channel, at rate=0.12, after
+        // 100+s of simulated time) it does NOT fully eliminate the reported checkerboard -
+        // adjacent columns still swing between ~0.02 and ~0.24. That's because this scheme
+        // isn't quite the linear case the 1/8 threshold assumes: it only ever sends water
+        // toward a STRICTLY lower neighbour (max(0, H-neighbour)), so a channel thalweg -
+        // locally lowest across its cross-section, by definition - is a pure receiver from
+        // its banks until it fills just enough to flip to being a pure sender the very next
+        // step, relaying back and forth between two near-symmetric cells rather than easing
+        // toward their mean. Lowering `rate` shrinks that relay's amplitude but can't remove
+        // it, since it isn't a smooth-diffusion mode being damped - see the post-update blur
+        // pass further down (after flow speed is computed) for the actual fix, which targets
+        // this specific relay pattern directly. This cap is kept anyway: it's a real, free
+        // (same op count, just a smaller constant) improvement with no downside, just not
+        // sufficient alone.
+        const rate = Math.min(0.12, RATE * dt);
 
         // A rock's obstruction halo resists flow along a link if EITHER end sits in
         // it - not just flow leaving an obstructed cell, but flow trying to enter one
@@ -580,26 +597,74 @@ export class WaterSim {
     }
 
     // A touch of numerical damping: the 4-neighbour Jacobi update above is prone to a
-    // standing checkerboard oscillation (odd/even cells ping-ponging water back and
-    // forth without settling). A light blur toward the local average kills exactly
-    // that highest-frequency pattern without visibly affecting real flow or pooling.
-    const smoothed = this._depthScratch || (this._depthScratch = new Float32Array(N * N));
-    smoothed.set(depth);
-    for (let j = 1; j < N - 1; j++) {
-      for (let i = 1; i < N - 1; i++) {
+    // standing checkerboard oscillation - not the classic linear-diffusion Nyquist mode
+    // (that would just need a lower transfer `rate` above - tried, and confirmed live it
+    // only shrinks the swing, doesn't remove it), but a rectified relay effect specific to
+    // this max(0, H-neighbour)-only scheme: a channel thalweg is (by definition) locally
+    // lowest across its cross-section, so it can only ever be a pure receiver from its banks
+    // in that axis until it fills just enough to become a pure sender the very next step -
+    // flip-flopping between the two rather than easing toward the mean, at whichever cell of
+    // a near-symmetric pair happens to sit a hair deeper. A light blur toward the local
+    // average kills exactly that highest-frequency pattern without visibly affecting real
+    // flow or pooling.
+    //
+    // Confirmed live (window.__game.water.depth sampled through the river channel) that this
+    // was previously gated to depth > 0.25, specifically to protect a thin trickle crossing
+    // dry ground, which relies on its own exact depth to keep advancing - blurring it toward
+    // a dry (depth ~ 0) neighbour would visibly stall/shrink the advancing edge. But the
+    // river's own body typically sits at ~0.1-0.25, i.e. almost always UNDER that threshold,
+    // so it was never smoothed at all - exactly where the reported checkerboard (and, per a
+    // raking-camera screenshot, literal crenellation geometry, since pos.y in the vertex
+    // shader is driven straight off this depth field - see _buildMesh) was showing up.
+    //
+    // Fix: gate on TOPOLOGY instead of absolute depth, AND do the exchange as an exactly
+    // mass-conserving transfer between cell PAIRS rather than an every-cell "blend toward the
+    // neighbourhood average". That distinction matters a lot here: the original per-cell
+    // formula pulls a fraction of each neighbour's CURRENT value into this cell without
+    // deducting it from that neighbour - fine when almost every neighbour of a smoothed cell
+    // is ALSO being smoothed (a big pool, only leaking a little at its rim), but a first
+    // attempt at reusing that formula here (gated to "cell and all 4 neighbours are wet",
+    // covering the whole river width) measured a real ~17% total-water increase over the
+    // deterministic 40s pre-warm (10813.7 -> 12671.9, same seed) - every river cell borders
+    // an excluded dry bank on at least one side, so that leak, negligible for a wide pool,
+    // compounds every step across the river's entire narrow width. A per-EDGE symmetric
+    // exchange (subtract from the giver, add to the receiver, once per link) cannot leak by
+    // construction, so it works equally safely on a wide pool or a one-cell-wide trickle.
+    //
+    // A genuine advancing wetting front always has at least one neighbour that's dry (or
+    // negligibly damp) - that's what "the front" means - so by only exchanging across a link
+    // where BOTH ends already carry real water, a front cell's exact depth is left untouched
+    // on that side (same protection the old code intended), while an interior cell fully
+    // surrounded by real water - whether a 2m pool or this 0.1-0.25m river - isn't relying on
+    // its own exact depth to reach anywhere new, so it's safe to blur.
+    const WET = 0.015; // "real water" vs. the negligible wetting-front edge; matches the
+                        // fragment shader's own vDepth < 0.01 discard cutoff, with a touch of
+                        // margin so this doesn't fight that boundary.
+    // Same effective strength as the old formula in its fully-interior case (self*0.55 +
+    // neighbourhood-average*0.45 with 4 neighbours algebraically reduces to depth[k] +=
+    // 0.09 * sum(neighbour - depth[k])) - just applied as a real symmetric flux instead of a
+    // one-sided borrow, so the coefficient (and thus the smoothing strength) is unchanged
+    // from what already-working pools/sea code relied on; only the conservation is fixed.
+    const BLUR_K = 0.09;
+    const delta = this._blurDelta || (this._blurDelta = new Float32Array(N * N));
+    delta.fill(0);
+    for (let j = 1; j < N - 2; j++) {
+      for (let i = 1; i < N - 2; i++) {
         const k = idx(i, j);
-        // Only smooth substantial water (pools, the sea) - a thin trickle relies on
-        // its exact depth to keep propagating across dry ground, so leave it alone.
-        if (blocked[k] || depth[k] <= 0.25) continue;
-        let sum = depth[k], count = 1;
-        if (!blocked[idx(i + 1, j)]) { sum += depth[idx(i + 1, j)]; count++; }
-        if (!blocked[idx(i - 1, j)]) { sum += depth[idx(i - 1, j)]; count++; }
-        if (!blocked[idx(i, j + 1)]) { sum += depth[idx(i, j + 1)]; count++; }
-        if (!blocked[idx(i, j - 1)]) { sum += depth[idx(i, j - 1)]; count++; }
-        smoothed[k] = depth[k] * 0.55 + (sum / count) * 0.45;
+        if (blocked[k] || depth[k] <= WET) continue;
+        const kR = idx(i + 1, j);
+        if (!blocked[kR] && depth[kR] > WET) {
+          const d = BLUR_K * (depth[kR] - depth[k]);
+          delta[k] += d; delta[kR] -= d;
+        }
+        const kU = idx(i, j + 1);
+        if (!blocked[kU] && depth[kU] > WET) {
+          const d = BLUR_K * (depth[kU] - depth[k]);
+          delta[k] += d; delta[kU] -= d;
+        }
       }
     }
-    depth.set(smoothed);
+    for (let k = 0; k < N * N; k++) depth[k] += delta[k];
 
     this._erode(dt, terrain);
     terrain.markDirty();
