@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=45';
-import { WaterSim } from './water.js?v=45';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=45';
-import { scatterRocks } from './rocks.js?v=45';
-import { Player } from './player.js?v=45';
-import { AudioSystem } from './audio.js?v=45';
-import { Particles } from './particles.js?v=45';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=46';
+import { WaterSim } from './water.js?v=46';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=46';
+import { scatterRocks } from './rocks.js?v=46';
+import { Player } from './player.js?v=46';
+import { AudioSystem } from './audio.js?v=46';
+import { Particles } from './particles.js?v=46';
 
 // ---------- renderer / scene / camera ----------
 
@@ -377,6 +377,8 @@ function getShovelTarget() {
 
 const PLAYER_RADIUS = 0.4;
 let nearbySmallRock = null;
+const _rollAxis = new THREE.Vector3();
+const _rollQuat = new THREE.Quaternion();
 
 function findNearbySmallRock() {
   let best = null, bestD = Infinity;
@@ -479,6 +481,14 @@ function updateRockPushing(dt) {
       const nx2 = THREE.MathUtils.clamp(r.x + nx * moveAmt, 0.5, SIZE - 0.5);
       const nz2 = THREE.MathUtils.clamp(r.z + nz * moveAmt, 0.5, SIZE - 0.5);
       r.moveTo(nx2, nz2, terrain);
+      // Roll, don't slide: a ball rolling distance `d` without slipping turns by
+      // d/radius around the horizontal axis perpendicular to its direction of
+      // travel. Applied as a world-space quaternion premultiply (not r.mesh.rotation
+      // directly), so repeated pushes from any angle accumulate into real tumbling
+      // rather than resetting/fighting a fixed local axis.
+      const rollAxis = _rollAxis.set(nz, 0, -nx).normalize();
+      const rollAngle = moveAmt / r.radius;
+      r.mesh.quaternion.premultiply(_rollQuat.setFromAxisAngle(rollAxis, rollAngle));
       hints.trigger('pushRock');
       rockScrapeCooldown -= dt;
       if (rockScrapeCooldown <= 0 && player.speed > 0.2) {
