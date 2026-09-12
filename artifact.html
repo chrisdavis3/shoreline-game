@@ -1,8 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Shoreline</title>
 <style>
   :root { color-scheme: dark; }
@@ -104,16 +99,13 @@
     touch-action: manipulation;
   }
   .tbtn.active { background: rgba(255,255,255,0.4); color: #10201d; }
-  /* Suppress the OS text-selection/"Copy" call-out everywhere in the touch UI, not
-     just on buttons - a long-press on the dig/joystick zones triggered it too. */
   #touchUI, #touchUI * {
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
   #zoomBtns { display: flex; gap: 8px; }
   #zoomBtns .tbtn { width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; border-radius: 50%; }
 </style>
-</head>
-<body>
+
 <div id="app"></div>
 
 <div id="loading">
@@ -158,5 +150,3 @@
 }
 </script>
 <script type="module" src="./src/main.js?v=51"></script>
-</body>
-</html>
