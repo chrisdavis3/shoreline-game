@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=41';
-import { WaterSim } from './water.js?v=41';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=41';
-import { scatterRocks } from './rocks.js?v=41';
-import { Player } from './player.js?v=41';
-import { AudioSystem } from './audio.js?v=41';
-import { Particles } from './particles.js?v=41';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=43';
+import { WaterSim } from './water.js?v=43';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=43';
+import { scatterRocks } from './rocks.js?v=43';
+import { Player } from './player.js?v=43';
+import { AudioSystem } from './audio.js?v=43';
+import { Particles } from './particles.js?v=43';
 
 // ---------- renderer / scene / camera ----------
 
@@ -505,99 +505,93 @@ function updateRockPushing(dt) {
 
 // ---------- shovel action ----------
 
-let digAudioCooldown = 0;
+// Straightforward, no inventory: hold the button and the shovel keeps taking
+// discrete scoops out of the ground right at the target, piling each one up
+// immediately next to the hole (on the side toward the player, like actually
+// throwing spoil over your shoulder). Keep holding and it keeps going, for as
+// long as you like, in the same spot or wherever you aim - each stroke fires on
+// a fixed cadence so it reads as distinct scoops, not a smoothly draining ramp.
+const DIG_RADIUS = 1.05;
+const PILE_RADIUS = 0.95;
+const STROKE_INTERVAL = 0.4; // seconds per scoop - matches the shovel-swing animation
+const STROKE_AMOUNT = 0.17;  // height-units of material moved per scoop
+
+let strokeAccum = 0;
+// The mouse path aims by raycasting onto the terrain - fine for a single click, but
+// while actively digging the ground right under that screen pixel keeps getting
+// lower, so a fresh raycast every frame drifts to wherever that now-deeper surface
+// sits (the same camera ray meets a lower surface further along its length). Over a
+// few seconds of holding still, that silent drift was enough to slide the dig point
+// onto the pile it had just built, digging it back out and undoing the whole hole -
+// exactly the "nothing happens no matter how long I hold it" complaint. Lock the aim
+// once per hold (mouse press to release) instead of re-raycasting every frame -
+// "digging in the location you specified" means the location doesn't move on its own.
+let lockedDigTarget = null;
 function updateShovel(dt) {
   const carrying = !!player.carriedRock;
   const usingMouse = (mouse.left || mouse.right) && !carrying;
   const wantsDig = (mouse.left || touchDigHeld) && !carrying;
   const wantsFlatten = (mouse.right || touchSmoothHeld) && !carrying;
 
-  // The shovel physically holds either sand or nothing - never both a scoop and a
-  // dig at once. Empty shovel + action = scoop up from the target; loaded shovel +
-  // action = tip that exact load out at the (new) target. No auto-conjured rim, no
-  // particles flung to an invented destination - the pile you see IS the material,
-  // and it only moves where you carry it.
-  player.sandPile.visible = player.sandLoad > 0.015;
-  const pileScale = 0.45 + 0.85 * (player.sandLoad / player.maxSandLoad);
-  player.sandPile.scale.set(pileScale, pileScale * 0.5, pileScale);
-
   if (wantsDig || wantsFlatten) {
-    const target = usingMouse ? getShovelTarget() : player.aheadPoint(player.reach * 0.85);
+    let target;
+    if (!usingMouse) {
+      target = player.aheadPoint(player.reach * 0.85);
+    } else if (wantsDig) {
+      if (!lockedDigTarget) lockedDigTarget = getShovelTarget();
+      target = lockedDigTarget;
+    } else {
+      lockedDigTarget = null; // flattening still tracks the live mouse ray - sweeping to smooth an area is the point
+      target = getShovelTarget();
+    }
     if (target) {
       if (usingMouse) player.facing = Math.atan2(target.x - player.pos.x, target.z - player.pos.z);
 
       if (wantsDig) {
         player.startDig();
-        const rate = 0.8;
-        const y = terrain.sampleHeightBilinear(target.x, target.z);
-        const depth = water.depthAt(target.x, target.z);
-        digAudioCooldown -= dt;
-        const playSound = digAudioCooldown <= 0;
-        if (playSound) digAudioCooldown = 0.16;
+        strokeAccum += dt;
+        if (strokeAccum >= STROKE_INTERVAL) {
+          strokeAccum -= STROKE_INTERVAL;
 
-        if (player.shovelEmpty) {
-          // Scoop: take a load OUT of the ground here, up to a full shovel.
-          // The gauge tracks the INTENDED amount (want), not deform()'s return
-          // value - that return sums the height change over the whole falloff
-          // footprint (many cells), not just this one spot, so using it here
-          // inflated the gauge relative to what dump later drains 1:1 by `give`,
-          // and the shovel would "fill up" well before an equivalent amount was
-          // actually excavated - a large net height gain every cycle. want/give
-          // are the same unit on both sides, so the gauge now nets to zero.
-          if (player.sandLoad <= 0.001) player.scoopOrigin = { x: target.x, z: target.z };
-          const allowed = player.maxSandLoad - player.sandLoad;
-          const want = Math.min(rate * dt, allowed);
-          terrain.deform(target.x, target.z, 1.25, -want, 1.0);
-          player.sandLoad = Math.min(player.maxSandLoad, player.sandLoad + want);
-          if (player.sandLoad >= player.maxSandLoad - 0.001) player.shovelEmpty = false;
+          // Spoil lands just past the dig radius, on the side nearest the player -
+          // a real digger throws each scoop back over their shoulder, not into a
+          // ring around the hole, so the growing pile stays a distinct heap you can
+          // watch form right next to the (also growing) hole.
+          const dx = player.pos.x - target.x, dz = player.pos.z - target.z;
+          const dlen = Math.sqrt(dx * dx + dz * dz) || 1;
+          const pileDist = DIG_RADIUS + PILE_RADIUS * 0.85;
+          const pileX = THREE.MathUtils.clamp(target.x + (dx / dlen) * pileDist, 0.5, SIZE - 0.5);
+          const pileZ = THREE.MathUtils.clamp(target.z + (dz / dlen) * pileDist, 0.5, SIZE - 0.5);
+
+          const y = terrain.sampleHeightBilinear(target.x, target.z);
+          const depth = water.depthAt(target.x, target.z);
+
+          // deform()'s return is the NET volume actually removed (hardness resists
+          // digging into packed/rocky ground) - pile exactly that much back up, not
+          // a fixed amount, so a scoop out of soft sand builds a bigger heap than
+          // the same stroke against harder ground.
+          const removed = terrain.deform(target.x, target.z, DIG_RADIUS, -STROKE_AMOUNT, 1.0);
+          if (removed < -0.0005) {
+            terrain.deform(pileX, pileZ, PILE_RADIUS, -removed, 0);
+          }
           terrain.markDirty();
-          if (playSound) {
-            if (depth > 0.02) audio.splash(); else audio.digScrape();
-            particles.burst(target.x, y + 0.08, target.z, depth > 0.02 ? 4 : 6, {
-              color: depth > 0.02 ? [0.75, 0.85, 0.85] : [0.82, 0.73, 0.53],
-              life: depth > 0.02 ? 0.35 : 0.5,
-              up: depth > 0.02 ? 1.4 : 1.1,
-              upVar: 0.8,
-              spread: 1.0,
-            });
-          }
+
+          if (depth > 0.02) audio.splash(); else audio.digScrape();
+          particles.burst(target.x, y + 0.08, target.z, depth > 0.02 ? 5 : 8, {
+            color: depth > 0.02 ? [0.75, 0.85, 0.85] : [0.82, 0.73, 0.53],
+            life: depth > 0.02 ? 0.4 : 0.55,
+            up: depth > 0.02 ? 1.4 : 1.2,
+            upVar: 0.8,
+            spread: 1.0,
+          });
+          const pileY = terrain.sampleHeightBilinear(pileX, pileZ);
+          particles.burst(pileX, pileY + 0.12, pileZ, 4, {
+            color: [0.74, 0.63, 0.44], life: 0.4, up: 0.5, upVar: 0.3, spread: 0.6,
+          });
           hints.trigger('dig');
-          if (player.shovelEmpty === false && playSound) hints.trigger('shovelFull');
-        } else {
-          // Dump: tip the carried load OUT here, restoring ground. Refuse to dump
-          // within MIN_DUMP_DIST of where this exact load was scooped from - without
-          // this, holding the dig button still (the normal way to dig, since the
-          // target tracks the shovel not the mouse on touch) fills the shovel in
-          // under a second and the very next instant starts tipping that same load
-          // right back into the hole it just came from, netting nothing. Moving the
-          // material somewhere else is the whole point.
-          const ox = player.scoopOrigin ? target.x - player.scoopOrigin.x : Infinity;
-          const oz = player.scoopOrigin ? target.z - player.scoopOrigin.z : Infinity;
-          const MIN_DUMP_DIST = 1.8;
-          if (Math.sqrt(ox * ox + oz * oz) < MIN_DUMP_DIST) {
-            if (playSound) hints.trigger('shovelFull');
-          } else {
-            // Hardness resists DIGGING into ground, not piling loose sand on top of
-            // it, so pass hardnessLimit 0 to always apply at full effect here.
-            const give = Math.min(rate * dt, player.sandLoad);
-            terrain.deform(target.x, target.z, 1.25, give, 0);
-            player.sandLoad -= give;
-            if (player.sandLoad <= 0.001) { player.sandLoad = 0; player.shovelEmpty = true; player.scoopOrigin = null; }
-            terrain.markDirty();
-            if (playSound) {
-              audio.digScrape();
-              particles.burst(target.x, y + 0.1, target.z, 5, {
-                color: [0.74, 0.63, 0.44],
-                life: 0.45,
-                up: 0.5,
-                upVar: 0.3,
-                spread: 0.7,
-              });
-            }
-            hints.trigger('dump');
-          }
         }
       } else {
+        strokeAccum = 0;
         player.state = 'dig-active';
         player.digTimer += dt * 0.6;
         terrain.smooth(target.x, target.z, 1.9, Math.min(1, dt * 1.6));
@@ -606,6 +600,8 @@ function updateShovel(dt) {
       return;
     }
   }
+  strokeAccum = 0;
+  lockedDigTarget = null;
   player.stopDig();
 }
 
@@ -619,9 +615,7 @@ const hints = {
   timer: 0,
   messages: {
     intro: 'A shovel. A stream finding its way to the sea. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
-    dig: 'That load is staying on the shovel until you tip it out somewhere.',
-    shovelFull: "Shovel's full - find somewhere to tip it out.",
-    dump: null,
+    dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
     pickUp: 'Carry it to the water. E to set it down.',
     putDown: null,
     pushRock: null,

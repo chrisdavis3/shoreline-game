@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { warpX } from './terrain.js?v=41';
+import { warpX } from './terrain.js?v=43';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this
@@ -174,30 +174,6 @@ export class Player {
     this.mesh = built.group;
     this.shovel = buildShovel();
     built.handR.add(this.shovel);
-
-    // A physical load of sand sitting on the blade - scooped from one spot, carried,
-    // and tipped out somewhere else. No "0.4 units" of abstract material: a visible
-    // pile that grows as you dig and shrinks as you dump it.
-    const pileMat = new THREE.MeshStandardMaterial({ color: '#8a6b46', roughness: 0.95, flatShading: true });
-    this.sandPile = new THREE.Mesh(new THREE.SphereGeometry(0.058, 8, 6), pileMat);
-    this.sandPile.scale.set(1, 0.5, 1);
-    this.sandPile.position.set(0, 0.03, -0.01);
-    this.sandPile.visible = false;
-    this.sandPile.castShadow = true;
-    this.shovel.add(this.sandPile);
-    this.sandLoad = 0;
-    this.maxSandLoad = 0.55;
-    // Where the CURRENT load was scooped from - a full shovel must be carried some
-    // distance away before it can be tipped out, or holding the dig button at one
-    // spot would fill the shovel in well under a second and then immediately start
-    // dumping that same load right back into the hole it came from, netting nothing.
-    this.scoopOrigin = null;
-    // Hysteresis, not a per-frame threshold check: must reach fully empty before
-    // scooping again, fully full before dumping is even possible. A plain
-    // "sandLoad <= threshold" re-evaluated every frame oscillates in and out of
-    // scoop/dump mode when the threshold sits near one frame's worth of transfer,
-    // ratcheting the ground up a little every cycle instead of settling.
-    this.shovelEmpty = true;
 
     this.pos = new THREE.Vector3(0, 0, 0);
     this.facing = Math.PI;
