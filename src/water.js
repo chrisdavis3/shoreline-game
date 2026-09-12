@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=40';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=41';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -382,6 +382,7 @@ export class WaterSim {
     const fR = this.fR, fL = this.fL, fU = this.fU, fD = this.fD;
     fR.fill(0); fL.fill(0); fU.fill(0); fD.fill(0);
     const RATE = 22; // responsive enough that even a gentle streambed grade visibly carries water
+    const obstruction = terrain.obstruction;
 
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
@@ -389,12 +390,13 @@ export class WaterSim {
         if (blocked[k] || depth[k] <= 1e-5) continue;
         const H = h[k] + depth[k];
         const available = depth[k] * CELL_AREA;
+        const obK = obstruction[k];
 
-        let dR = 0, dL = 0, dU = 0, dD = 0;
-        if (i + 1 < N && !blocked[idx(i + 1, j)]) dR = Math.max(0, H - (h[idx(i + 1, j)] + depth[idx(i + 1, j)]));
-        if (i - 1 >= 0 && !blocked[idx(i - 1, j)]) dL = Math.max(0, H - (h[idx(i - 1, j)] + depth[idx(i - 1, j)]));
-        if (j + 1 < N && !blocked[idx(i, j + 1)]) dU = Math.max(0, H - (h[idx(i, j + 1)] + depth[idx(i, j + 1)]));
-        if (j - 1 >= 0 && !blocked[idx(i, j - 1)]) dD = Math.max(0, H - (h[idx(i, j - 1)] + depth[idx(i, j - 1)]));
+        let dR = 0, dL = 0, dU = 0, dD = 0, kR = -1, kL = -1, kU = -1, kD = -1;
+        if (i + 1 < N && !blocked[kR = idx(i + 1, j)]) dR = Math.max(0, H - (h[kR] + depth[kR]));
+        if (i - 1 >= 0 && !blocked[kL = idx(i - 1, j)]) dL = Math.max(0, H - (h[kL] + depth[kL]));
+        if (j + 1 < N && !blocked[kU = idx(i, j + 1)]) dU = Math.max(0, H - (h[kU] + depth[kU]));
+        if (j - 1 >= 0 && !blocked[kD = idx(i, j - 1)]) dD = Math.max(0, H - (h[kD] + depth[kD]));
 
         const sumD = dR + dL + dU + dD;
         if (sumD <= 1e-6) continue;
@@ -403,10 +405,16 @@ export class WaterSim {
         // and ping-pong into a checkerboard oscillation instead of settling.
         const rate = Math.min(0.22, RATE * dt);
 
-        if (dR > 0) fR[k] = Math.min(available * (dR / sumD) * rate, dR * CELL_AREA * 0.5);
-        if (dL > 0) fL[k] = Math.min(available * (dL / sumD) * rate, dL * CELL_AREA * 0.5);
-        if (dU > 0) fU[k] = Math.min(available * (dU / sumD) * rate, dU * CELL_AREA * 0.5);
-        if (dD > 0) fD[k] = Math.min(available * (dD / sumD) * rate, dD * CELL_AREA * 0.5);
+        // A rock's obstruction halo resists flow along a link if EITHER end sits in
+        // it - not just flow leaving an obstructed cell, but flow trying to enter one
+        // too, or water would only "feel" the rock one hop late. This is what turns a
+        // large boulder into a real partial dam: flow toward/through its halo is
+        // throttled, so water backs up on the upstream side and gets pushed toward
+        // whatever unobstructed link is left (splitting around it, or a new route).
+        if (dR > 0) fR[k] = Math.min(available * (dR / sumD) * rate, dR * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kR]) * 0.92);
+        if (dL > 0) fL[k] = Math.min(available * (dL / sumD) * rate, dL * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kL]) * 0.92);
+        if (dU > 0) fU[k] = Math.min(available * (dU / sumD) * rate, dU * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kU]) * 0.92);
+        if (dD > 0) fD[k] = Math.min(available * (dD / sumD) * rate, dD * CELL_AREA * 0.5) * (1 - Math.max(obK, obstruction[kD]) * 0.92);
       }
     }
 

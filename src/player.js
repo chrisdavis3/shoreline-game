@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { warpX } from './terrain.js?v=40';
+import { warpX } from './terrain.js?v=41';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this
@@ -187,6 +187,11 @@ export class Player {
     this.shovel.add(this.sandPile);
     this.sandLoad = 0;
     this.maxSandLoad = 0.55;
+    // Where the CURRENT load was scooped from - a full shovel must be carried some
+    // distance away before it can be tipped out, or holding the dig button at one
+    // spot would fill the shovel in well under a second and then immediately start
+    // dumping that same load right back into the hole it came from, netting nothing.
+    this.scoopOrigin = null;
     // Hysteresis, not a per-frame threshold check: must reach fully empty before
     // scooping again, fully full before dumping is even possible. A plain
     // "sandLoad <= threshold" re-evaluated every frame oscillates in and out of

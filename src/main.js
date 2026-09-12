@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=40';
-import { WaterSim } from './water.js?v=40';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=40';
-import { scatterRocks } from './rocks.js?v=40';
-import { Player } from './player.js?v=40';
-import { AudioSystem } from './audio.js?v=40';
-import { Particles } from './particles.js?v=40';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=41';
+import { WaterSim } from './water.js?v=41';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=41';
+import { scatterRocks } from './rocks.js?v=41';
+import { Player } from './player.js?v=41';
+import { AudioSystem } from './audio.js?v=41';
+import { Particles } from './particles.js?v=41';
 
 // ---------- renderer / scene / camera ----------
 
@@ -544,6 +544,7 @@ function updateShovel(dt) {
           // and the shovel would "fill up" well before an equivalent amount was
           // actually excavated - a large net height gain every cycle. want/give
           // are the same unit on both sides, so the gauge now nets to zero.
+          if (player.sandLoad <= 0.001) player.scoopOrigin = { x: target.x, z: target.z };
           const allowed = player.maxSandLoad - player.sandLoad;
           const want = Math.min(rate * dt, allowed);
           terrain.deform(target.x, target.z, 1.25, -want, 1.0);
@@ -563,25 +564,38 @@ function updateShovel(dt) {
           hints.trigger('dig');
           if (player.shovelEmpty === false && playSound) hints.trigger('shovelFull');
         } else {
-          // Dump: tip the carried load OUT here, restoring ground. Hardness resists
-          // DIGGING into ground, not piling loose sand on top of it, so pass
-          // hardnessLimit 0 to always apply at full effect here.
-          const give = Math.min(rate * dt, player.sandLoad);
-          terrain.deform(target.x, target.z, 1.25, give, 0);
-          player.sandLoad -= give;
-          if (player.sandLoad <= 0.001) { player.sandLoad = 0; player.shovelEmpty = true; }
-          terrain.markDirty();
-          if (playSound) {
-            audio.digScrape();
-            particles.burst(target.x, y + 0.1, target.z, 5, {
-              color: [0.74, 0.63, 0.44],
-              life: 0.45,
-              up: 0.5,
-              upVar: 0.3,
-              spread: 0.7,
-            });
+          // Dump: tip the carried load OUT here, restoring ground. Refuse to dump
+          // within MIN_DUMP_DIST of where this exact load was scooped from - without
+          // this, holding the dig button still (the normal way to dig, since the
+          // target tracks the shovel not the mouse on touch) fills the shovel in
+          // under a second and the very next instant starts tipping that same load
+          // right back into the hole it just came from, netting nothing. Moving the
+          // material somewhere else is the whole point.
+          const ox = player.scoopOrigin ? target.x - player.scoopOrigin.x : Infinity;
+          const oz = player.scoopOrigin ? target.z - player.scoopOrigin.z : Infinity;
+          const MIN_DUMP_DIST = 1.8;
+          if (Math.sqrt(ox * ox + oz * oz) < MIN_DUMP_DIST) {
+            if (playSound) hints.trigger('shovelFull');
+          } else {
+            // Hardness resists DIGGING into ground, not piling loose sand on top of
+            // it, so pass hardnessLimit 0 to always apply at full effect here.
+            const give = Math.min(rate * dt, player.sandLoad);
+            terrain.deform(target.x, target.z, 1.25, give, 0);
+            player.sandLoad -= give;
+            if (player.sandLoad <= 0.001) { player.sandLoad = 0; player.shovelEmpty = true; player.scoopOrigin = null; }
+            terrain.markDirty();
+            if (playSound) {
+              audio.digScrape();
+              particles.burst(target.x, y + 0.1, target.z, 5, {
+                color: [0.74, 0.63, 0.44],
+                life: 0.45,
+                up: 0.5,
+                upVar: 0.3,
+                spread: 0.7,
+              });
+            }
+            hints.trigger('dump');
           }
-          hints.trigger('dump');
         }
       } else {
         player.state = 'dig-active';
@@ -684,6 +698,10 @@ function animate() {
   updateCarriedRock();
   updateShovel(dt);
 
+  // Rocks move (pushed, carried, dropped) - rebuild their hydraulic halo from the
+  // live rock list before the water sim reads it this frame. Cheap: a few dozen
+  // rocks, each touching a small neighbourhood of cells.
+  terrain.recomputeObstruction(rocks);
   water.update(dt, terrain);
   terrain.update(dt);
   particles.update(dt);

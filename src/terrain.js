@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=40';
+import { Noise2D } from './noise.js?v=41';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -63,20 +63,34 @@ export function coastT(i) {
 // no matter how the sand/rock/sea classification varied within it - every
 // depth row spanned the full [0, SIZE] width, so the mesh always ended in a
 // hard 90-degree corner where the inland (dune-line) edge met the side edge.
-// Real Mawgan Porth is narrow where the beach meets the road/dunes and only
-// reaches full width once you're well down the bay. This pulls every row's
-// vertices inward toward the centreline by that same amount, so the actual
-// boundary of the ground - not just its coloring - narrows at the neck. Only
-// x is warped (z/depth is untouched), and it's applied to render-only
-// positions - the (i, j) simulation grid underneath stays a plain rectangle.
-export function footprintWidth(t) {
+// First attempt at fixing this scaled every vertex in a row toward the
+// centreline by the same factor - which also dragged in the stream (well off
+// centre, near i=31) by that same factor, so ITS width visibly tapered to a
+// point near the dune line (an unwanted "wizard hat" on the river) while the
+// actual sand edge, softened by noise, read as a vague round blob instead of
+// a specific outline. This only touches vertices within insetCells() of
+// whichever side edge is nearest - the stream, which sits ~31 cells in from
+// i=0, is safely outside that band at every depth, so it renders exactly as
+// the water sim computes it. Only x is warped (z/depth untouched), and only
+// render positions - the (i, j) simulation grid underneath stays a rectangle.
+export function insetCells(t) {
   const wt = THREE.MathUtils.clamp(t / 0.30, 0, 1);
-  return 0.52 + 0.48 * Math.pow(wt, 1.4);
+  return 22 * (1 - Math.pow(wt, 1.4));
 }
 
 export function warpX(x, z) {
   const t = z / SIZE;
-  return SIZE / 2 + (x - SIZE / 2) * footprintWidth(t);
+  const blendWidth = insetCells(t);
+  if (blendWidth <= 0.001) return x;
+  const i = x / CELL;
+  const edgeDist = Math.min(i, GRID - 1 - i);
+  if (edgeDist >= blendWidth) return x; // safely inside the untouched middle - stream lives here
+  const insetAmount = blendWidth * 0.8; // how far the true edge itself gets pulled inward
+  const localT = edgeDist / blendWidth; // 0 at the literal edge, 1 at the blend boundary
+  const eased = Math.pow(localT, 0.7);
+  const newEdgeDist = insetAmount + (blendWidth - insetAmount) * eased; // monotonic, continuous at the blend boundary
+  const newI = i < (GRID - 1) / 2 ? newEdgeDist : (GRID - 1) - newEdgeDist;
+  return newI * CELL;
 }
 
 export class Terrain {
@@ -84,7 +98,14 @@ export class Terrain {
     this.bedrock = new Float32Array(GRID * GRID); // hard, barely erodable base
     this.height = new Float32Array(GRID * GRID);  // current surface height (bedrock + loose sand)
     this.hardness = new Float32Array(GRID * GRID); // 0 = loose sand, 1 = rock/hard
-    this.blocked = new Uint8Array(GRID * GRID);    // occupied by a placed/large rock
+    this.blocked = new Uint8Array(GRID * GRID);    // occupied by a placed/large rock - a hard wall, no water at all
+    // Graduated hydraulic resistance around each medium/large rock, 0..1 - unlike
+    // `blocked` (an all-or-nothing wall exactly under the rock's solid footprint),
+    // this fades out over a wider halo so a boulder measurably slows/backs up flow
+    // in its immediate vicinity even where the channel isn't literally full of rock.
+    // Recomputed from the live rock list each frame (see recomputeObstruction) -
+    // rocks move, so this can't be baked in once like the static terrain fields.
+    this.obstruction = new Float32Array(GRID * GRID);
     this.moisture = new Float32Array(GRID * GRID); // 0..1, set by water sim for shading/footprints
     this.disturbance = new Float32Array(GRID * GRID); // 0..1, freshly dug/piled sand - fades over time
     this._generate();
@@ -526,11 +547,82 @@ export class Terrain {
     }
   }
 
+  // Rebuilds the graduated obstruction halo around every non-carried medium/large
+  // rock. Called once per frame from main.js (rocks are few - tens, not thousands -
+  // so a full rebuild is cheap and avoids drift from incrementally adding/removing
+  // overlapping rocks' contributions). Solid core (0..coreR) reads a full 1.0,
+  // matching `blocked` exactly; it tapers to 0 by haloR so a large boulder measurably
+  // resists flow well beyond its own solid footprint, the way a real obstruction
+  // disturbs the current around it, not just exactly under itself. Overlapping
+  // rocks take the max, not the sum - two rocks don't "double-dam" a cell.
+  recomputeObstruction(rocksList) {
+    this.obstruction.fill(0);
+    for (const r of rocksList) {
+      if (r.carried || r.size === 'small') continue;
+      const coreR = r.radius * 0.7;
+      const haloR = r.radius * 1.9;
+      const i0 = Math.max(0, Math.floor((r.x - haloR) / CELL));
+      const i1 = Math.min(GRID - 1, Math.ceil((r.x + haloR) / CELL));
+      const j0 = Math.max(0, Math.floor((r.z - haloR) / CELL));
+      const j1 = Math.min(GRID - 1, Math.ceil((r.z + haloR) / CELL));
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const dx = i * CELL - r.x, dz = j * CELL - r.z;
+          const d = Math.sqrt(dx * dx + dz * dz);
+          if (d >= haloR) continue;
+          const val = d <= coreR ? 1 : Math.pow(1 - (d - coreR) / (haloR - coreR), 1.3);
+          const k = idx(i, j);
+          if (val > this.obstruction[k]) this.obstruction[k] = val;
+        }
+      }
+    }
+  }
+
   markDirty() {
     this._needsSync = true;
   }
 
+  // A dug pit's rim or a dumped pile is left at whatever knife-edge slope the
+  // shovel's circular falloff happened to produce - real loose sand can't hold
+  // that, it slumps toward its angle of repose within seconds. Gated to cells
+  // with real disturbance (i.e. recently player-touched, not the hand-tuned base
+  // terrain) so it settles what you just dug/piled without softening the actual
+  // dune ridges or headland cliffs generated at world start. Hardness raises the
+  // stable slope a lot - packed/rocky ground barely moves, loose sand a great deal.
+  _relaxSlopes(dt) {
+    const h = this.height, hardness = this.hardness, blocked = this.blocked, disturbance = this.disturbance;
+    const scratch = this._slopeScratch || (this._slopeScratch = new Float32Array(GRID * GRID));
+    scratch.set(h);
+    const dirs = [1, -1, GRID, -GRID];
+    const rate = Math.min(1, dt * 6);
+    let changed = false;
+    for (let j = 1; j < GRID - 1; j++) {
+      for (let i = 1; i < GRID - 1; i++) {
+        const k = idx(i, j);
+        if (blocked[k] || disturbance[k] < 0.04) continue;
+        const maxSlope = 0.55 + hardness[k] * 3.5; // metres of drop per metre, at repose
+        const hk = h[k];
+        for (const d of dirs) {
+          const nk = k + d;
+          if (blocked[nk]) continue;
+          const dropM = hk - h[nk];
+          const excess = dropM - maxSlope * CELL;
+          if (excess <= 0) continue;
+          const move = excess * 0.4 * rate;
+          scratch[k] -= move * 0.5;
+          scratch[nk] += move * 0.5;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      h.set(scratch);
+      this._needsSync = true;
+    }
+  }
+
   update(dt) {
+    this._relaxSlopes(dt);
     if (this._needsSync) {
       this._syncPositions();
       this.geometry.computeVertexNormals();

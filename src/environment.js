@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, footprintWidth } from './terrain.js?v=40';
-import { Noise2D } from './noise.js?v=40';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=41';
+import { Noise2D } from './noise.js?v=41';
 
 const decoNoise = new Noise2D(555);
 
@@ -399,13 +399,13 @@ export function buildSkirt(terrain) {
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
     // The real terrain's own left/right edges now taper inward toward the dune
-    // line (see terrain.js warpX/footprintWidth) instead of running the full
-    // [0, SIZE] width - use those same warped bounds here, or this hill rise
-    // would only start at the old, wider fixed edges and leave a visible gap
-    // of nothing between the narrowed sand and the rising background.
+    // line (see terrain.js warpX/insetCells) instead of running the full [0, SIZE]
+    // width - use those same warped bounds here, or this hill rise would only
+    // start at the old, wider fixed edges and leave a visible gap of nothing
+    // between the narrowed sand and the rising background.
     const t = z / SIZE;
-    const half = (SIZE / 2) * footprintWidth(t);
-    const left = SIZE / 2 - half, right = SIZE / 2 + half;
+    const insetAmount = insetCells(t) * 0.8 * CELL; // matches warpX's own inset exactly
+    const left = insetAmount, right = SIZE - insetAmount;
     const dxOut = Math.max(0, left - x, x - right);
     const dzLand = Math.max(0, -z);
     const dzSea = Math.max(0, z - SIZE);
