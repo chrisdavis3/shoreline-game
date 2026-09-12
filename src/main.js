@@ -122,6 +122,7 @@ scene.add(player.mesh);
 player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
 
 const particles = new Particles(scene, 320);
+const debris = new Debris(scene, terrain, water);
 
 const audio = new AudioSystem();
 
@@ -742,6 +743,7 @@ function animate() {
   water.update(dt, terrain);
   terrain.update(dt);
   particles.update(dt);
+  debris.update(dt, clock.elapsedTime);
 
   updateCamera(dt);
   sky.material.uniforms.uTime.value = clock.elapsedTime;
@@ -761,7 +763,7 @@ function animate() {
 }
 
 window.__game = {
-  player, camera, terrain, water, rocks, scene, updateShovel,
+  player, camera, terrain, water, rocks, scene, updateShovel, debris,
   setTouchDig: (v) => { touchDigHeld = v; },
   debug: () => ({
     camDist, camDistTarget, introTimer, clockElapsed: clock.elapsedTime,
