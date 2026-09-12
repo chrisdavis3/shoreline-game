@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=48';
+import { Noise2D } from './noise.js?v=49';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -15,44 +15,82 @@ const n3 = new Noise2D(4242);
 
 function idx(i, j) { return j * GRID + i; }
 
-// Stream centreline: a gentle meander from the dunes down to the sea. Enters
-// toward the southern end of the beach (low i), matching the real River
-// Menalhyl, which meanders along Mawgan Porth's southern edge rather than
-// down the middle.
+// Stream centreline: a gentle meander from the dunes down to the sea.
+//
+// CORRECTED (this was backwards for a whole prior session): earlier code and
+// an earlier web search both claimed the real River Menalhyl "meanders along
+// Mawgan Porth's southern edge" and placed the stream near i=31 (low i,
+// close to the southern end). Independently re-verified this time by
+// pulling the ACTUAL OpenStreetMap topology instead of trusting either
+// claim: Overpass way 307894885 ("River Menalhyl") plus its connected
+// unnamed "stream" ways (30348987, 1176294924-27) trace a continuous
+// waterway from inland, ending at node 334634419 (50.465113, -5.0321424).
+// Projected onto the real coastline (way 62688995) between the two
+// headlands that flank Mawgan Porth beach, that mouth sits at ~99% of the
+// way along the bay from its southern end (i.e. i~137 of 139) - hard up
+// against the NORTHERN headland, not the southern one. (The user's own
+// on-screen observation of the live game is what triggered re-checking this
+// - it was right, the prior "southern edge" research was wrong.)
+//
+// Placed at a mirror image of the old (wrong) 0.22-from-the-south position -
+// 0.78, i.e. the same ~31-cell margin from the NORTH edge (i=GRID-1) this
+// time - rather than pushing all the way out to the literal i~137 the real
+// mouth projects to. Going any closer to the edge than that runs the stream
+// into insetCells()'s dune-line taper band below (up to 22 cells wide at
+// t=0), which would re-introduce the exact "wizard hat" pinch that band was
+// built to avoid (see insetCells' own comment). 31 cells of margin keeps the
+// stream clear of it at every t, same as the old placement did on the other
+// side.
 function streamCenterX(z) {
   const t = z / SIZE;
-  return SIZE * 0.22 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
+  return SIZE * 0.78 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
 }
 
-// The coastline's t-threshold (0..1, inland->sea) as a function of column i -
-// traced directly from OpenStreetMap's actual "Dunes" beach polygon at Mawgan
-// Porth (queried via the Overpass API: way 399625654, natural=beach, 63
-// vertices), not a procedural formula. For each of the 140 columns this is
-// the real seaward (westmost) edge of that polygon at the matching
-// north-south position, projected to local metres, then linearly rescaled so
-// the polygon's full north-south extent (~564m) maps across the level's
-// width and its seaward swing maps to a 0.32-0.82 depth range. Light
-// smoothing (a ~17-sample moving average over the raw traced points) keeps
-// the per-column slope gentle - the raw trace had real jumps of ~25 grid
-// cells between adjacent columns (small real features that are only a few
-// metres across in reality, compressed into single columns here), which
-// rendered as a sawtooth rather than a coastline at this map's scale.
-// i=0 is the southern end of the real beach, i=GRID-1 the northern end.
+// The coastline's t-threshold (0..1, inland->sea) as a function of column i.
+//
+// CORRECTED (this was wrong for a whole prior session): the previous version
+// of this array was traced from OSM way 399625654 ("Dunes", natural=beach) -
+// but that way turned out to be a small, narrow, unrelated dune-ridge
+// feature well inland of and much smaller than Mawgan Porth's actual wide
+// sandy bay (confirmed by plotting way 399625654 next to the real
+// natural=coastline way 62688995: they aren't even the same shape or scale).
+// Using it explains why the beach looked nothing like the reference map no
+// matter how the other constants were tuned - the source data was for the
+// wrong feature.
+//
+// This version is traced from the REAL coastline instead: Overpass way
+// 62688995 (natural=coastline, OS OpenData StreetView), restricted to the
+// stretch that actually bounds the sandy bay (between the two flanking
+// rocky headlands, verified against the river mouth above and against the
+// aerial reference photo). For each of the 140 columns, the coastline's
+// perpendicular distance from the straight baseline connecting the bay's
+// two ends (i.e. how far it bulges seaward past a straight mouth-to-mouth
+// line, not raw longitude - using raw longitude here is what produced a
+// misleading monotonic ramp during verification, since this stretch of
+// coast itself runs at a diagonal, not purely north-south) was sampled at
+// 140 even arc-length steps, lightly smoothed (7-sample moving average) to
+// keep the per-column slope gentle, then rescaled to a 0.40-0.82 depth
+// range. i=0 is the southern end of the real bay, i=GRID-1 the northern end
+// (unchanged convention - only the traced shape and the stream's side were
+// wrong before, not this axis labelling). This is also where the specific
+// real asymmetry lives: a real rocky point cuts into the sand around
+// i=20-29 (the dip below), on the southern third - the two ends of this
+// beach are not mirror images of each other, and this notch is why.
 const REAL_COAST_T = [
-  0.4350, 0.4421, 0.4490, 0.4559, 0.4627, 0.4695, 0.4762, 0.4829, 0.4896, 0.5050,
-  0.5183, 0.5308, 0.5421, 0.5513, 0.5559, 0.5490, 0.5399, 0.5305, 0.5217, 0.5138,
-  0.5068, 0.5001, 0.4929, 0.4852, 0.4770, 0.4684, 0.4592, 0.4496, 0.4401, 0.4310,
-  0.4235, 0.4199, 0.4271, 0.4361, 0.4446, 0.4532, 0.4689, 0.4849, 0.5009, 0.5176,
-  0.5349, 0.5524, 0.5699, 0.5874, 0.6050, 0.6226, 0.6403, 0.6582, 0.6762, 0.6944,
-  0.7128, 0.7312, 0.7486, 0.7575, 0.7648, 0.7711, 0.7764, 0.7811, 0.7853, 0.7893,
-  0.7930, 0.7966, 0.7998, 0.8029, 0.8057, 0.8082, 0.8103, 0.8119, 0.8130, 0.8137,
-  0.8139, 0.8137, 0.8132, 0.8125, 0.8116, 0.8104, 0.8090, 0.8072, 0.8052, 0.8030,
-  0.8004, 0.7976, 0.7946, 0.7916, 0.7884, 0.7853, 0.7820, 0.7784, 0.7747, 0.7707,
-  0.7664, 0.7617, 0.7565, 0.7509, 0.7450, 0.7386, 0.7318, 0.7246, 0.7170, 0.7092,
-  0.7012, 0.6931, 0.6849, 0.6766, 0.6684, 0.6599, 0.6512, 0.6420, 0.6327, 0.6232,
-  0.6135, 0.6038, 0.5942, 0.5846, 0.5752, 0.5658, 0.5564, 0.5478, 0.5400, 0.5329,
-  0.5271, 0.5232, 0.5211, 0.5202, 0.5204, 0.5217, 0.5239, 0.5270, 0.5310, 0.5358,
-  0.5412, 0.5472, 0.5511, 0.5561, 0.5613, 0.5667, 0.5725, 0.5778, 0.5816, 0.5839,
+  0.4862, 0.4922, 0.4986, 0.5044, 0.5170, 0.5285, 0.5360, 0.5400, 0.5418, 0.5412,
+  0.5391, 0.5357, 0.5308, 0.5262, 0.5218, 0.5167, 0.5103, 0.5025, 0.4935, 0.4834,
+  0.4730, 0.4623, 0.4512, 0.4401, 0.4292, 0.4188, 0.4102, 0.4039, 0.4004, 0.4000,
+  0.4025, 0.4074, 0.4137, 0.4215, 0.4307, 0.4404, 0.4510, 0.4607, 0.4704, 0.4808,
+  0.4913, 0.5017, 0.5104, 0.5191, 0.5288, 0.5376, 0.5456, 0.5536, 0.5620, 0.5726,
+  0.5821, 0.5921, 0.6031, 0.6148, 0.6257, 0.6341, 0.6419, 0.6504, 0.6571, 0.6639,
+  0.6701, 0.6754, 0.6826, 0.6896, 0.6935, 0.6993, 0.7050, 0.7114, 0.7191, 0.7265,
+  0.7338, 0.7441, 0.7539, 0.7637, 0.7727, 0.7804, 0.7877, 0.7929, 0.7951, 0.7968,
+  0.7989, 0.8011, 0.8039, 0.8066, 0.8103, 0.8155, 0.8193, 0.8200, 0.8187, 0.8146,
+  0.8084, 0.8007, 0.7921, 0.7820, 0.7713, 0.7591, 0.7476, 0.7392, 0.7343, 0.7306,
+  0.7268, 0.7244, 0.7257, 0.7286, 0.7290, 0.7265, 0.7239, 0.7250, 0.7253, 0.7238,
+  0.7202, 0.7168, 0.7142, 0.7100, 0.7025, 0.6945, 0.6857, 0.6774, 0.6708, 0.6640,
+  0.6570, 0.6498, 0.6431, 0.6356, 0.6273, 0.6161, 0.6031, 0.5899, 0.5765, 0.5631,
+  0.5501, 0.5369, 0.5238, 0.5105, 0.4971, 0.4858, 0.4773, 0.4713, 0.4657, 0.4611,
 ];
 
 export function coastT(i) {
@@ -65,13 +103,14 @@ export function coastT(i) {
 // hard 90-degree corner where the inland (dune-line) edge met the side edge.
 // First attempt at fixing this scaled every vertex in a row toward the
 // centreline by the same factor - which also dragged in the stream (well off
-// centre, near i=31) by that same factor, so ITS width visibly tapered to a
-// point near the dune line (an unwanted "wizard hat" on the river) while the
-// actual sand edge, softened by noise, read as a vague round blob instead of
-// a specific outline. This only touches vertices within insetCells() of
-// whichever side edge is nearest - the stream, which sits ~31 cells in from
-// i=0, is safely outside that band at every depth, so it renders exactly as
-// the water sim computes it. Only x is warped (z/depth untouched), and only
+// centre) by that same factor, so ITS width visibly tapered to a point near
+// the dune line (an unwanted "wizard hat" on the river) while the actual sand
+// edge, softened by noise, read as a vague round blob instead of a specific
+// outline. This only touches vertices within insetCells() of whichever side
+// edge is nearest - the stream (now ~31 cells in from i=GRID-1, see
+// streamCenterX - it was ~31 cells in from i=0 before the river-side fix) is
+// safely outside that band at every depth, so it renders exactly as the
+// water sim computes it. Only x is warped (z/depth untouched), and only
 // render positions - the (i, j) simulation grid underneath stays a rectangle.
 export function insetCells(t) {
   const wt = THREE.MathUtils.clamp(t / 0.30, 0, 1);
@@ -294,7 +333,9 @@ export class Terrain {
 
         // Rocky headlands: Berryl's Point at the southern end (i=0) and Trenance
         // Point at the northern end (i=GRID-1) - the real rock formations that
-        // flank the traced beach polygon at its two ends. An exponent above 1
+        // flank the real coastline (see REAL_COAST_T above) at its two ends. Note
+        // the river/stream enters right against the Trenance Point end (high i),
+        // not Berryl's Point - see streamCenterX's own comment. An exponent above 1
         // keeps the derivative bounded near the edge (the earlier exponent-below-1
         // version jumped straight to ~40% mask height in its very first active
         // cell, a visible seam - see the fix history). Only actually renders as
