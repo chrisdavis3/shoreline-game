@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=43';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=45';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill

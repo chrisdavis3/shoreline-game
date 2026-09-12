@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=43';
-import { WaterSim } from './water.js?v=43';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=43';
-import { scatterRocks } from './rocks.js?v=43';
-import { Player } from './player.js?v=43';
-import { AudioSystem } from './audio.js?v=43';
-import { Particles } from './particles.js?v=43';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=45';
+import { WaterSim } from './water.js?v=45';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=45';
+import { scatterRocks } from './rocks.js?v=45';
+import { Player } from './player.js?v=45';
+import { AudioSystem } from './audio.js?v=45';
+import { Particles } from './particles.js?v=45';
 
 // ---------- renderer / scene / camera ----------
 
@@ -511,10 +511,14 @@ function updateRockPushing(dt) {
 // throwing spoil over your shoulder). Keep holding and it keeps going, for as
 // long as you like, in the same spot or wherever you aim - each stroke fires on
 // a fixed cadence so it reads as distinct scoops, not a smoothly draining ramp.
-const DIG_RADIUS = 1.05;
-const PILE_RADIUS = 0.95;
+// An oval, blade-shaped mark (see terrain.scoopDeform), not a round dimple - and
+// deliberately small: the terrain mesh only has a vertex every ~0.82m, so this is
+// close to the smallest footprint that still spans enough vertices to show an
+// actual oval shape rather than a single point poked down.
+const DIG_LEN = 0.85, DIG_WID = 0.55;
+const PILE_LEN = 0.7, PILE_WID = 0.5;
 const STROKE_INTERVAL = 0.4; // seconds per scoop - matches the shovel-swing animation
-const STROKE_AMOUNT = 0.17;  // height-units of material moved per scoop
+const STROKE_AMOUNT = 0.22;  // height-units of material moved per scoop
 
 let strokeAccum = 0;
 // The mouse path aims by raycasting onto the terrain - fine for a single click, but
@@ -556,23 +560,24 @@ function updateShovel(dt) {
           // Spoil lands just past the dig radius, on the side nearest the player -
           // a real digger throws each scoop back over their shoulder, not into a
           // ring around the hole, so the growing pile stays a distinct heap you can
-          // watch form right next to the (also growing) hole.
+          // watch form right next to the (also growing) hole. Both scoop and pile
+          // are oriented along this same player<->target axis.
           const dx = player.pos.x - target.x, dz = player.pos.z - target.z;
           const dlen = Math.sqrt(dx * dx + dz * dz) || 1;
-          const pileDist = DIG_RADIUS + PILE_RADIUS * 0.85;
+          const pileDist = DIG_LEN + PILE_LEN * 0.85;
           const pileX = THREE.MathUtils.clamp(target.x + (dx / dlen) * pileDist, 0.5, SIZE - 0.5);
           const pileZ = THREE.MathUtils.clamp(target.z + (dz / dlen) * pileDist, 0.5, SIZE - 0.5);
 
           const y = terrain.sampleHeightBilinear(target.x, target.z);
           const depth = water.depthAt(target.x, target.z);
 
-          // deform()'s return is the NET volume actually removed (hardness resists
-          // digging into packed/rocky ground) - pile exactly that much back up, not
-          // a fixed amount, so a scoop out of soft sand builds a bigger heap than
-          // the same stroke against harder ground.
-          const removed = terrain.deform(target.x, target.z, DIG_RADIUS, -STROKE_AMOUNT, 1.0);
+          // scoopDeform()'s return is the NET volume actually removed (hardness
+          // resists digging into packed/rocky ground) - pile exactly that much back
+          // up, not a fixed amount, so a scoop out of soft sand builds a bigger heap
+          // than the same stroke against harder ground.
+          const removed = terrain.scoopDeform(target.x, target.z, dx, dz, DIG_LEN, DIG_WID, -STROKE_AMOUNT, 1.0);
           if (removed < -0.0005) {
-            terrain.deform(pileX, pileZ, PILE_RADIUS, -removed, 0);
+            terrain.scoopDeform(pileX, pileZ, dx, dz, PILE_LEN, PILE_WID, -removed, 0);
           }
           terrain.markDirty();
 

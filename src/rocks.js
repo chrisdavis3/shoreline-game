@@ -1,11 +1,15 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, warpX } from './terrain.js?v=43';
-import { Noise2D } from './noise.js?v=43';
+import { GRID, CELL, SIZE, streamCenterX, warpX } from './terrain.js?v=45';
+import { Noise2D } from './noise.js?v=45';
 
 const rn = new Noise2D(777);
 
 function makeRockGeometry(scale, seed) {
-  const geo = new THREE.IcosahedronGeometry(scale, 1);
+  // detail 3 instead of 1 - 16x the triangles (1280 vs 80 per rock). Trivial cost
+  // even across every scattered rock (tens of them, not thousands), and it's what
+  // actually lets the per-vertex noise bump below read as real rock texture instead
+  // of a faceted gem.
+  const geo = new THREE.IcosahedronGeometry(scale, 3);
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);

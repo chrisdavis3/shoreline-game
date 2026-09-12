@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=43';
+import { Noise2D } from './noise.js?v=45';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -481,6 +481,41 @@ export class Terrain {
           // digging softens what's left slightly (loosened sand)
           this.hardness[k] *= 0.985;
         }
+      }
+    }
+    return moved;
+  }
+
+  // Oval variant of deform() - a real shovel scoop is an elongated blade shape, not
+  // a perfectly round dimple, and at this mesh's ~0.82m vertex spacing a small round
+  // dab barely reads as anything at all. Elongated along (dirX, dirZ) - the direction
+  // the blade drove in - and narrower across it, so it reads as a distinct scoop mark
+  // rather than a shapeless soft blob once several strokes land near each other.
+  scoopDeform(x, z, dirX, dirZ, lenR, widR, delta, hardnessLimit = 1.0) {
+    const dlen = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
+    const ux = dirX / dlen, uz = dirZ / dlen; // along the scoop's length
+    const vx = -uz, vz = ux;                  // across the scoop's width
+    const maxR = Math.max(lenR, widR);
+    const i0 = Math.max(0, Math.floor((x - maxR) / CELL));
+    const i1 = Math.min(GRID - 1, Math.ceil((x + maxR) / CELL));
+    const j0 = Math.max(0, Math.floor((z - maxR) / CELL));
+    const j1 = Math.min(GRID - 1, Math.ceil((z + maxR) / CELL));
+    let moved = 0;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i * CELL - x, dz = j * CELL - z;
+        const along = dx * ux + dz * uz, across = dx * vx + dz * vz;
+        const d = Math.sqrt((along / lenR) ** 2 + (across / widR) ** 2);
+        if (d > 1) continue;
+        const k = idx(i, j);
+        if (this.blocked[k]) continue;
+        const falloff = 1 - d;
+        const resist = 1 - Math.min(0.92, this.hardness[k]) * hardnessLimit;
+        const amt = delta * falloff * falloff * resist;
+        this.height[k] += amt;
+        moved += amt;
+        this.disturbance[k] = Math.min(1, this.disturbance[k] + Math.abs(amt) * 6);
+        if (delta < 0) this.hardness[k] *= 0.985;
       }
     }
     return moved;
