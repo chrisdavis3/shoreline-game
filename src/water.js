@@ -17,7 +17,28 @@ const PIPE_LEN = CELL;
 // rendered coastline's coves and points rather than a flat cutoff.
 const SEA_ROW_T = 0.60;
 
+// The VISIBLE water mesh is rendered at a finer resolution than the physics grid -
+// playtesting showed the river/sea edge reading as a chunky staircase because the
+// mesh literally only had a vertex every ~0.82m (one per sim cell). The simulation
+// itself stays untouched at N x N (full CPU-cost budget preserved) - only the
+// render mesh is denser.
+//
+// First attempt at this did the upsample on the CPU (bilinear-interpolating the
+// coarse depth/flow arrays into a finer JS array every frame) - measured at
+// ~34ms/frame for a 2x-denser mesh (see the water.flowSpeed/_syncMeshAttrs
+// profiling notes in the fix history), which alone would cap the game under
+// 30fps. That's real CPU cost from a "just rendering" feature, exactly the
+// mistake the performance notes warn against. Moved the upsampling onto the GPU
+// instead: the coarse fields are uploaded as small textures once per frame (a
+// cheap copy over the N x N grid, not the finer render grid), and the vertex
+// shader samples them with hardware bilinear filtering (effectively free) to
+// place each fine vertex and derive its depth/flow. Confirmed this drops the
+// per-frame JS cost to a small fraction of a millisecond (see fix history).
+const RENDER_SS = 2;
+const RN = (N - 1) * RENDER_SS + 1;
+
 function idx(i, j) { return j * N + i; }
+function fidx(i, j) { return j * RN + i; }
 
 export class WaterSim {
   constructor(terrain) {
@@ -99,40 +120,79 @@ export class WaterSim {
   }
 
   _buildMesh() {
-    this.geometry = new THREE.PlaneGeometry(SIZE, SIZE, N - 1, N - 1);
+    // Rendered at RN x RN (RENDER_SS x finer than the N x N sim grid) purely for
+    // visual smoothness - see RENDER_SS comment above. Depth/flow/height are NOT
+    // per-vertex attributes any more (that was the CPU-expensive version) - the
+    // vertex shader instead samples the coarse sim fields as small textures
+    // (created just below, uploaded fresh each frame in _syncMeshAttrs), using
+    // the GPU's own bilinear filtering to do the upsampling for free. aFieldUV
+    // is the only thing each vertex needs to know: its own (u,v) position in
+    // that coarse N x N field, set once here since it never changes.
+    this.geometry = new THREE.PlaneGeometry(SIZE, SIZE, RN - 1, RN - 1);
     this.geometry.rotateX(-Math.PI / 2);
     this.geometry.translate(SIZE / 2, 0, SIZE / 2);
-    this.depthAttr = new THREE.BufferAttribute(new Float32Array(N * N), 1);
-    this.geometry.setAttribute('aDepth', this.depthAttr);
-    this.flowAttr = new THREE.BufferAttribute(new Float32Array(N * N), 1);
-    this.geometry.setAttribute('aFlow', this.flowAttr);
-    this.flowDirAttr = new THREE.BufferAttribute(new Float32Array(N * N * 2), 2);
-    this.geometry.setAttribute('aFlowDir', this.flowDirAttr);
+
+    const fineCell = CELL / RENDER_SS;
+    const fieldUV = new Float32Array(RN * RN * 2);
 
     // Match the terrain mesh's inland-neck taper (see terrain.js warpX) - the
     // water surface needs the same x warp or it'd float over ground that no
-    // longer lines up with it near the dune line.
+    // longer lines up with it near the dune line. warpX takes real world
+    // coordinates, not grid indices, so it works fine at the finer spacing too.
     {
       const pos = this.geometry.attributes.position;
-      for (let j = 0; j < N; j++) {
-        const z = j * CELL;
-        for (let i = 0; i < N; i++) {
-          pos.setX(idx(i, j), warpX(i * CELL, z));
+      for (let j = 0; j < RN; j++) {
+        const z = j * fineCell;
+        const v = (j / RENDER_SS + 0.5) / N; // +0.5: sample texel centres, not edges
+        for (let i = 0; i < RN; i++) {
+          const k = fidx(i, j);
+          pos.setX(k, warpX(i * fineCell, z));
+          pos.setY(k, 0); // fully overwritten in the vertex shader every frame
+          fieldUV[k * 2] = (i / RENDER_SS + 0.5) / N;
+          fieldUV[k * 2 + 1] = v;
         }
       }
     }
+    this.geometry.setAttribute('aFieldUV', new THREE.BufferAttribute(fieldUV, 2));
 
     // The surf/wave-crest effect below needs to know where the REAL (per-column,
     // irregular) coastline is, not a flat cutoff - otherwise the breaking-wave
     // line shows up at the wrong depth in every cove and point, as a comb of
     // bumps in the wrong place rather than tracking the actual shore. This is a
     // constant per column, so it's set once here rather than every frame.
-    const coastZArr = new Float32Array(N * N);
-    for (let i = 0; i < N; i++) {
-      const z = this._coastT[i] * SIZE;
-      for (let j = 0; j < N; j++) coastZArr[idx(i, j)] = z;
+    // coastT() only resolves at integer sim columns - linearly interpolate
+    // between the two bracketing columns for the in-between fine columns so
+    // this doesn't reintroduce its own per-column staircase at the finer res.
+    const coastZArr = new Float32Array(RN * RN);
+    const coastZByCol = new Float32Array(RN);
+    for (let i = 0; i < RN; i++) {
+      const ci = i / RENDER_SS;
+      const i0 = Math.floor(ci), i1 = Math.min(N - 1, i0 + 1);
+      const t = ci - i0;
+      const z0 = this._coastT[i0] * SIZE, z1 = this._coastT[i1] * SIZE;
+      coastZByCol[i] = z0 + (z1 - z0) * t;
+    }
+    for (let j = 0; j < RN; j++) {
+      for (let i = 0; i < RN; i++) coastZArr[fidx(i, j)] = coastZByCol[i];
     }
     this.geometry.setAttribute('aCoastZ', new THREE.BufferAttribute(coastZArr, 1));
+
+    // The three coarse (N x N) sim fields the vertex shader needs, each uploaded
+    // fresh every frame in _syncMeshAttrs - see the RENDER_SS comment up top for
+    // why this replaced a CPU-side per-vertex upsample. RGBAFormat/FloatType for
+    // broad support; only R/G channels are actually used per texture.
+    const mkFieldTexture = () => {
+      const tex = new THREE.DataTexture(new Float32Array(N * N * 4), N, N, THREE.RGBAFormat, THREE.FloatType);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.generateMipmaps = false;
+      return tex;
+    };
+    this._depthFlowTex = mkFieldTexture(); // r=depth, g=flowSpeed
+    this._velTex = mkFieldTexture();       // r=velX, g=velZ
+    this._heightTex = mkFieldTexture();    // r=terrain height
 
     this.uniforms = {
       uTime: { value: 0 },
@@ -141,28 +201,39 @@ export class WaterSim {
       uDeepColor: { value: new THREE.Color('#1b6f8c') },
       uFoam: { value: new THREE.Color('#eef6f2') },
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
+      uDepthFlowTex: { value: this._depthFlowTex },
+      uVelTex: { value: this._velTex },
+      uHeightTex: { value: this._heightTex },
     };
 
     this.material = new THREE.ShaderMaterial({
       transparent: true,
       uniforms: this.uniforms,
       vertexShader: /* glsl */`
-        attribute float aDepth;
-        attribute float aFlow;
-        attribute vec2 aFlowDir;
+        attribute vec2 aFieldUV;
         attribute float aCoastZ;
+        uniform sampler2D uDepthFlowTex;
+        uniform sampler2D uVelTex;
+        uniform sampler2D uHeightTex;
         varying float vDepth;
         varying float vFlow;
         varying vec2 vFlowDir;
         varying float vCrest;
         varying vec3 vWorldPos;
-        varying vec3 vNormal;
         uniform float uTime;
         void main() {
+          // The coarse N x N sim fields (depth/flow/velocity/terrain height),
+          // GPU-bilinear-sampled here instead of CPU-upsampled per vertex every
+          // frame - see the RENDER_SS comment at the top of water.js for why.
+          vec2 depthFlow = texture2D(uDepthFlowTex, aFieldUV).rg;
+          float aDepth = depthFlow.r;
           vDepth = aDepth;
-          vFlow = aFlow;
-          vFlowDir = aFlowDir;
+          vFlow = depthFlow.g;
+          vFlowDir = texture2D(uVelTex, aFieldUV).rg;
+          float terrainH = texture2D(uHeightTex, aFieldUV).r;
+
           vec3 pos = position;
+          pos.y = terrainH + aDepth + 0.006;
           float ripple = sin(pos.x * 1.3 + uTime * 1.6) * 0.02 + cos(pos.z * 1.1 - uTime * 1.3) * 0.02;
           pos.y += (aDepth > 0.002) ? ripple * min(1.0, aDepth * 4.0) : 0.0;
           // Surf: wave crests travel toward shore (-z) and rear up as the water shoals,
@@ -178,7 +249,13 @@ export class WaterSim {
           vCrest = crest * shoreZone;
           vec4 world = modelMatrix * vec4(pos, 1.0);
           vWorldPos = world.xyz;
-          vNormal = normalize(mat3(modelMatrix) * normal);
+          // Position.y is now driven entirely by the vertex shader (from the
+          // sampled fields above), so the CPU-side geometry never touches its own
+          // Y and the imported "normal" attribute is meaningless (computed for a
+          // flat, all-zero-Y plane) - the fragment shader reconstructs a real
+          // normal from screen-space derivatives of vWorldPos instead (see
+          // below), which is also cheaper than a periodic CPU
+          // computeVertexNormals() pass over the whole (now much denser) mesh.
           gl_Position = projectionMatrix * viewMatrix * world;
         }
       `,
@@ -188,7 +265,6 @@ export class WaterSim {
         varying vec2 vFlowDir;
         varying float vCrest;
         varying vec3 vWorldPos;
-        varying vec3 vNormal;
         uniform float uTime;
         uniform vec3 uShallowColor;
         uniform vec3 uDeepColor;
@@ -221,7 +297,13 @@ export class WaterSim {
         }
 
         void main() {
-          if (vDepth < 0.0015) discard;
+          // Raised from 0.0015: at that threshold, sub-centimetre trace moisture
+          // sitting in incidental terrain dips (nowhere near the actual river or
+          // coastline) was rendering as full-brightness foam lines (see foamEdge
+          // below) - stray white threads disconnected from the real water. 0.01
+          // (1cm) hides that trace-level noise while a real flowing edge, which
+          // the sim actually seeds/relaxes to a meaningful depth, is unaffected.
+          if (vDepth < 0.01) discard;
           float depthN = clamp(vDepth / 3.2, 0.0, 1.0);
           vec3 base = mix(uShallowColor, uDeepColor, depthN);
           float shimmer = sin(vWorldPos.x * 2.2 + uTime * 1.8) * cos(vWorldPos.z * 2.0 - uTime * 1.4);
@@ -230,28 +312,72 @@ export class WaterSim {
           // sim's real per-cell velocity), not just a fixed ambient shimmer pattern -
           // that's what actually reads as "the river is moving" rather than the
           // water just sitting there changing color in place.
+          // Tuned against measured live sim values (window.__game.water.flowSpeed
+          // in the actual river channel): typical flowMag there is ~0.1-0.65, only
+          // occasionally higher - the old clamp(flowMag*0.6) and narrow 0.62-0.95
+          // streak gate meant real river cells almost never crossed into visible
+          // territory, and a static-vs-2-seconds-later screenshot comparison
+          // confirmed nothing was visibly moving. Rescaled so that measured range
+          // actually reads as a moving current, and sped up so the motion is
+          // obvious within a couple of seconds rather than a slow crawl.
           float flowMag = length(vFlowDir);
           vec2 dir = flowMag > 0.02 ? vFlowDir / flowMag : vec2(0.0, 1.0);
           float along = dot(vWorldPos.xz, dir);
           float across = dot(vWorldPos.xz, vec2(-dir.y, dir.x));
-          float streakSpeed = 1.6 + min(flowMag, 3.0) * 1.8;
-          float streak = sin(along * 1.4 - uTime * streakSpeed) * 0.5 + 0.5;
-          streak *= 0.6 + 0.4 * sin(across * 2.6 + uTime * 0.6);
-          float streakVis = smoothstep(0.62, 0.95, streak) * smoothstep(0.015, 0.3, vDepth) * clamp(flowMag * 0.6, 0.0, 1.0);
-          base = mix(base, uShallowColor * 1.25 + 0.05, streakVis * 0.5);
+          float streakSpeed = 2.2 + min(flowMag, 3.0) * 3.2;
+          float streak = sin(along * 0.8 - uTime * streakSpeed) * 0.5 + 0.5;
+          streak *= 0.65 + 0.35 * sin(across * 1.6 + uTime * 0.6);
+          // The sim's flow-transfer scheme has real per-cell numerical noise in
+          // wide/still water (see water.js's own comments on checkerboard
+          // oscillation) - it was always there, just inaudible under the old,
+          // much less sensitive gating. Cranking sensitivity up to make the real
+          // river read as flowing also picked up that noise as a chaotic,
+          // flickering moiré everywhere the water is deep and slow (i.e. the open
+          // sea/tidal reach, not the actual river) - confirmed by look at exactly
+          // that depth range. Fading the whole effect out with depth keeps it
+          // where it means something (the shallow, coherently-flowing channel)
+          // and off where it was just amplifying static.
+          float depthFade = smoothstep(2.0, 0.25, vDepth);
+          // Measured live in the actual channel (window.__game.water.flowSpeed
+          // at the deepest/fastest part of a mid-river cell): flowMag there
+          // typically sits around 0.2-0.3, not the 0.5+ this originally assumed -
+          // lowered the ramp so that realistic range actually lands mid-to-high
+          // on the visibility curve instead of near its bottom.
+          float flowVisibility = smoothstep(0.08, 0.4, flowMag) * depthFade;
+          float streakVis = smoothstep(0.45, 0.85, streak) * smoothstep(0.01, 0.25, vDepth) * flowVisibility;
+          base = mix(base, uShallowColor * 1.3 + 0.06, streakVis * 0.65);
           // Caustics only read in shallow, clear water - fade out with depth and
           // under foam (broken, aerated water doesn't hold a sharp light pattern).
           float causticVis = caustics(vWorldPos.xz, uTime) * smoothstep(0.9, 0.05, vDepth);
           base += causticVis * 0.22;
-          float fresnel = pow(1.0 - clamp(dot(normalize(vNormal), vec3(0.0,1.0,0.0)), 0.0, 1.0), 3.0);
+          // The real per-vertex normal used to come from THREE's computeVertexNormals
+          // on the CPU - but position.y is now driven entirely by the vertex shader
+          // (see RENDER_SS notes above), so the CPU-side geometry is flat and that
+          // normal would be meaningless. Reconstructing it here from screen-space
+          // derivatives of vWorldPos is both correct (it sees the real ripple/crest
+          // bumps the shader just applied) and cheaper than a periodic CPU pass over
+          // a mesh that's now denser than it used to be.
+          vec3 fdx = dFdx(vWorldPos), fdy = dFdy(vWorldPos);
+          vec3 nrm = normalize(cross(fdx, fdy));
+          if (nrm.y < 0.0) nrm = -nrm;
+          float fresnel = pow(1.0 - clamp(dot(nrm, vec3(0.0,1.0,0.0)), 0.0, 1.0), 3.0);
           vec3 sky = vec3(0.72, 0.80, 0.82);
           base = mix(base, sky, fresnel * 0.35);
-          float diff = clamp(dot(normalize(vNormal), uSunDir), 0.0, 1.0);
+          float diff = clamp(dot(nrm, uSunDir), 0.0, 1.0);
           base *= (0.95 + diff * 0.55);
-          float foamEdge = smoothstep(0.14, 0.0, vDepth);
+          // A deliberate wet-edge BAND, not "brightest at the thinnest possible
+          // sliver of water": the old smoothstep(0.14, 0.0, vDepth) peaked at
+          // vDepth==0 (right at the discard cutoff), which meant literally any
+          // trace of water - however inconsequential - rendered at maximum foam
+          // brightness. That's what made a stray, physically-negligible puddle
+          // (found by inspecting the live depth field) glow as a solid white
+          // thread with no relation to the real shoreline. Zero right at the
+          // cutoff, ramping up over the next few cm and fading out by ~0.4m gives
+          // a real, deliberate "just past the water's edge" foam line instead.
+          float foamEdge = smoothstep(0.01, 0.05, vDepth) * smoothstep(0.42, 0.05, vDepth);
           float foamFlow = smoothstep(0.55, 1.4, vFlow) * smoothstep(0.02, 0.25, vDepth);
           float surfFoam = smoothstep(0.3, 0.85, vCrest) * smoothstep(0.02, 0.2, vDepth);
-          float foam = clamp(foamEdge * 0.85 + foamFlow * 0.6 + surfFoam * 0.9 + streakVis * 0.25, 0.0, 1.0);
+          float foam = clamp(foamEdge * 0.9 + foamFlow * 0.6 + surfFoam * 0.9 + streakVis * 0.25, 0.0, 1.0);
           // Break the foam up into a mottled, bubbly texture instead of a flat tint -
           // two noise octaves drifting at slightly different speeds so it looks like
           // it's actually churning, not a static painted-on band.
@@ -260,9 +386,18 @@ export class WaterSim {
           foam *= 0.55 + foamTex * 0.75;
           foam = clamp(foam, 0.0, 1.0);
           vec3 color = mix(base, uFoam, foam);
-          // Genuinely translucent - a submerged rock or the riverbed underneath
-          // should still read through the surface, not vanish under it.
-          float alpha = mix(0.32, 0.62, depthN);
+          // Genuinely translucent in the shallows - a submerged rock or the
+          // riverbed underneath should still read through the surface there.
+          // But in genuinely deep water (depthN -> 1, i.e. the open sea, well
+          // past the shallow river) this used to cap at 0.62, letting the muddy
+          // seabed colour bleed through right where this mesh's far edge meets
+          // buildOcean()'s separate distant-sea backdrop plane (environment.js) -
+          // a visible seam where two different, differently-tinted "sea" surfaces
+          // showed through each other. Raising the deep ceiling to near-opaque
+          // makes the open-sea reach of this mesh read as solid water, matching
+          // how the backdrop plane already reads, without touching the shallow
+          // end's deliberate translucency at all (depthN is ~0 there).
+          float alpha = mix(0.32, 0.92, depthN);
           alpha = mix(alpha, 0.88, foam * 0.55);
           gl_FragColor = vec4(color, alpha);
         }
@@ -536,13 +671,18 @@ export class WaterSim {
     }
   }
 
+  // Uploads the coarse (N x N) sim fields into the three small textures the
+  // vertex shader samples - see the RENDER_SS comment near the top of this file.
+  // Only ever loops over N*N (19600 cells), never the finer RN*RN render grid -
+  // the GPU's own texture filtering does the upsampling, not this loop.
   _syncMeshAttrs(terrain) {
-    const depthArr = this.depthAttr.array;
-    const flowArr = this.flowAttr.array;
-    const flowDirArr = this.flowDirAttr.array;
-    const pos = this.geometry.attributes.position;
     const th = terrain.height;
     const blocked = terrain.blocked;
+
+    const dfData = this._depthFlowTex.image.data;
+    const velData = this._velTex.image.data;
+    const hData = this._heightTex.image.data;
+
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
         const k = idx(i, j);
@@ -559,20 +699,18 @@ export class WaterSim {
           if (j - 1 >= 0 && !blocked[idx(i, j - 1)]) { sum += this.depth[idx(i, j - 1)]; count++; }
           d = count > 0 ? sum / count : 0;
         }
-        depthArr[k] = d;
-        flowArr[k] = this.flowSpeed[k];
-        flowDirArr[k * 2] = this.velX[k];
-        flowDirArr[k * 2 + 1] = this.velZ[k];
-        pos.setY(k, th[k] + d + 0.006);
+        const p = k * 4;
+        dfData[p] = d;
+        dfData[p + 1] = this.flowSpeed[k];
+        velData[p] = this.velX[k];
+        velData[p + 1] = this.velZ[k];
+        hData[p] = th[k];
       }
     }
-    this.depthAttr.needsUpdate = true;
-    this.flowAttr.needsUpdate = true;
-    this.flowDirAttr.needsUpdate = true;
-    pos.needsUpdate = true;
-    if ((this._normAccum = (this._normAccum || 0) + 1) % 6 === 0) {
-      this.geometry.computeVertexNormals();
-    }
+
+    this._depthFlowTex.needsUpdate = true;
+    this._velTex.needsUpdate = true;
+    this._heightTex.needsUpdate = true;
   }
 
   depthAt(x, z) {
