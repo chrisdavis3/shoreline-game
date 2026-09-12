@@ -93,6 +93,84 @@ export function warpX(x, z) {
   return newI * CELL;
 }
 
+// ---------------------------------------------------------------------------
+// Render/simulation resolution decoupling.
+//
+// Everything above (and the deform/erosion code below) keeps reading and
+// writing the coarse GRIDxGRID (140x140, 0.82m/cell) arrays exactly as before -
+// water.js's flux/erosion/sediment passes, world-gen, and every hardness/
+// blocked/obstruction lookup are untouched. Only the RENDERED terrain mesh is
+// built at a much finer resolution (see FINE_GRID below), with heights derived
+// from the same coarse height array via smooth (Catmull-Rom) interpolation plus
+// a layer of genuine fine noise detail. This is what lets a shovel scoop
+// (~0.85m x 0.55m - only 1-2 coarse cells) actually read as a defined 3D
+// depression instead of a single coarse vertex tugging at a ~1.64m-wide fan of
+// triangles (which is what made a dug hole read as barely more than a colour
+// smudge before this change).
+export const RENDER_SUBDIV = 4;                          // fine vertices per coarse cell edge
+export const FINE_GRID = (GRID - 1) * RENDER_SUBDIV + 1; // 557 vertices/side
+export const FINE_CELL = CELL / RENDER_SUBDIV;           // ~0.205m
+
+const nFine1 = new Noise2D(6161);
+const nFine2 = new Noise2D(7331);
+
+// Named clampIdx (not `ci`) to avoid shadowing the many local `ci` (cell-index)
+// variables used throughout _generate() below.
+function clampIdx(v) { return v < 0 ? 0 : v > GRID - 1 ? GRID - 1 : v; }
+
+// Catmull-Rom cubic through 4 samples, t in [0,1] between p1 and p2 - passes
+// exactly through every coarse sample (unlike a least-squares fit) while
+// keeping a continuous derivative, so adjacent coarse cells blend smoothly
+// instead of showing the facet naive bilinear would produce at each seam.
+function catmullRom1D(p0, p1, p2, p3, t) {
+  return p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+}
+
+// Bicubic sample of a coarse GRIDxGRID array at fractional cell coords (fx, fz).
+function sampleBicubicCoarse(arr, fx, fz) {
+  const ix = Math.floor(fx), iz = Math.floor(fz);
+  const tx = fx - ix, tz = fz - iz;
+  let c0 = 0, c1 = 0, c2 = 0, c3 = 0;
+  for (let m = -1; m <= 2; m++) {
+    const jj = clampIdx(iz + m);
+    const p0 = arr[idx(clampIdx(ix - 1), jj)];
+    const p1 = arr[idx(clampIdx(ix), jj)];
+    const p2 = arr[idx(clampIdx(ix + 1), jj)];
+    const p3 = arr[idx(clampIdx(ix + 2), jj)];
+    const v = catmullRom1D(p0, p1, p2, p3, tx);
+    if (m === -1) c0 = v; else if (m === 0) c1 = v; else if (m === 1) c2 = v; else c3 = v;
+  }
+  return catmullRom1D(c0, c1, c2, c3, tz);
+}
+
+// Plain bilinear sample of a coarse array - used for fields that don't need C1
+// continuity (hardness, moisture, disturbance), and as the "undo the Catmull-Rom
+// rounding" sharper fallback blended in right at freshly-dug/piled cells (see
+// _computeFineHeightAt) so scoop marks keep a crisp, well-defined edge instead of
+// being softened by the wider bicubic stencil.
+function sampleBilinearCoarse(arr, fx, fz) {
+  const ix = clampIdx(Math.floor(fx)), iz = clampIdx(Math.floor(fz));
+  const ix1 = clampIdx(ix + 1), iz1 = clampIdx(iz + 1);
+  const tx = fx - Math.floor(fx), tz = fz - Math.floor(fz);
+  const h00 = arr[idx(ix, iz)], h10 = arr[idx(ix1, iz)];
+  const h01 = arr[idx(ix, iz1)], h11 = arr[idx(ix1, iz1)];
+  const a = h00 + (h10 - h00) * tx;
+  const b = h01 + (h11 - h01) * tx;
+  return a + (b - a) * tz;
+}
+
+// Coarse rows processed per frame by Terrain's background "fine mesh" scan (see
+// update()) - keeps erosion/sediment/moisture/tide-driven height drift flowing
+// through to the fine render mesh without ever re-touching the whole ~310K-vertex
+// mesh in a single frame (measured at ~126ms - a severe hitch - see the deployment
+// notes). Measured cost is ~0.85-0.9ms per coarse row (height+normal+colour pass
+// over that row's ~557 fine vertices); at 8 rows/frame that was ~7ms EVERY frame,
+// a big, permanent tax on the frame budget for no real benefit (erosion/moisture
+// are a "minutes-scale" process, not something that needs to reach the screen
+// within a fraction of a second). 2 rows/frame keeps the steady-state cost to
+// ~1.5-2ms/frame while still cycling the whole 140-row grid roughly every 1-2.5s.
+const FINE_SCAN_ROWS_PER_FRAME = 2;
+
 export class Terrain {
   constructor() {
     this.bedrock = new Float32Array(GRID * GRID); // hard, barely erodable base
@@ -110,10 +188,26 @@ export class Terrain {
     this.disturbance = new Float32Array(GRID * GRID); // 0..1, freshly dug/piled sand - fades over time
     this._generate();
 
-    this.geometry = new THREE.PlaneGeometry(SIZE, SIZE, GRID - 1, GRID - 1);
+    // ---- coarse "pick" proxy: invisible, never added to the scene, exists only
+    // so raycasting (the shovel-aim ray in main.js's getShovelTarget) stays as
+    // cheap as it was before this change. The rendered mesh below is ~16x denser
+    // (557x557 vs 140x140) - raycasting THAT every frame the mouse moves would be
+    // a real per-frame cost (three.js's core raycaster has no BVH, so hit-testing
+    // is linear in triangle count), for zero benefit since only x/z from the hit
+    // matter to gameplay, never the fine y. ----
+    this.pickGeometry = new THREE.PlaneGeometry(SIZE, SIZE, GRID - 1, GRID - 1);
+    this.pickGeometry.rotateX(-Math.PI / 2);
+    this.pickGeometry.translate(SIZE / 2, 0, SIZE / 2);
+    this.pickMesh = new THREE.Mesh(this.pickGeometry, new THREE.MeshBasicMaterial({ visible: false }));
+    this.pickMesh.visible = false;
+
+    // ---- the actual rendered terrain: FINE_GRID x FINE_GRID, heights derived
+    // from the coarse arrays above (see _computeFineHeightAt / _flushFineRegion) ----
+    this.geometry = new THREE.PlaneGeometry(SIZE, SIZE, FINE_GRID - 1, FINE_GRID - 1);
     this.geometry.rotateX(-Math.PI / 2);
     this.geometry.translate(SIZE / 2, 0, SIZE / 2);
-    this.colors = new Float32Array(GRID * GRID * 3);
+    this.fineHeight = new Float32Array(FINE_GRID * FINE_GRID);
+    this.colors = new Float32Array(FINE_GRID * FINE_GRID * 3);
     this.geometry.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
 
     this.material = new THREE.MeshStandardMaterial({
@@ -126,11 +220,53 @@ export class Terrain {
     this.mesh.receiveShadow = true;
     this.mesh.castShadow = false;
 
-    this._syncPositions();
-    this._updateColors();
-    this.geometry.computeVertexNormals();
+    // Colour palette + scratch THREE.Color instances, built once and reused every
+    // fine-vertex colour evaluation (the old per-call `new THREE.Color(...)` x ~15
+    // was fine at 140x140 called every 0.35s; at fine-mesh scale/frequency it isn't).
+    this._pal = {
+      sand: new THREE.Color('#cdbd97'),
+      wetSand: new THREE.Color('#8f8365'),
+      mud: new THREE.Color('#4f4636'),
+      grass: new THREE.Color('#71805a'),
+      dryGrass: new THREE.Color('#95935f'),
+      rockDark: new THREE.Color('#241f1a'),
+      rockMid: new THREE.Color('#5a5346'),
+      rockLight: new THREE.Color('#8c8170'),
+      turnedSand: new THREE.Color('#7c6142'),      // piled/disturbed rim - lighter, "just turned"
+      turnedSandDug: new THREE.Color('#4a3720'),   // freshly dug basin - darker, damp-looking
+    };
+    this._cBase = new THREE.Color();
+    this._cTone = new THREE.Color();
 
-    this._colorDirtyAccum = 0;
+    this._fineDirty = null;
+    this._scanRow = 0;
+
+    this._syncPickPositions();
+    this._buildFineStatic();
+    this.refreshFineMeshFully();
+  }
+
+  // One-time setup of the fine mesh's x/z positions (constant - only y moves).
+  _buildFineStatic() {
+    const arr = this.geometry.attributes.position.array;
+    for (let fj = 0; fj < FINE_GRID; fj++) {
+      const z = fj * FINE_CELL;
+      for (let fi = 0; fi < FINE_GRID; fi++) {
+        const k = fj * FINE_GRID + fi;
+        arr[k * 3] = warpX(fi * FINE_CELL, z);
+        arr[k * 3 + 2] = z;
+      }
+    }
+  }
+
+  // Public: force an immediate full-grid fine mesh resync (heights, normals,
+  // colours) rather than waiting for the incremental background scan to get all
+  // the way around - used once at startup and again after the water sim is
+  // pre-primed (see main.js), since 40 simulated seconds of erosion before the
+  // player ever sees the level would otherwise only reach the fine mesh a few
+  // frames late via the scan.
+  refreshFineMeshFully() {
+    this._flushFineRegion({ i0: 0, i1: GRID - 1, j0: 0, j1: GRID - 1 });
   }
 
   _generate() {
@@ -341,8 +477,11 @@ export class Terrain {
     return idx(i, j);
   }
 
-  _syncPositions() {
-    const pos = this.geometry.attributes.position;
+  // Coarse "pick" proxy sync - cheap (19,600 verts), unchanged cost from before
+  // this change. Only x/z/y positions matter here (raycast hit testing); no
+  // normals are computed since the pick mesh is never rendered or shaded.
+  _syncPickPositions() {
+    const pos = this.pickGeometry.attributes.position;
     for (let j = 0; j < GRID; j++) {
       const z = j * CELL;
       for (let i = 0; i < GRID; i++) {
@@ -354,107 +493,173 @@ export class Terrain {
     pos.needsUpdate = true;
   }
 
-  _updateColors() {
-    const sand = new THREE.Color('#cdbd97');
-    const wetSand = new THREE.Color('#8f8365');
-    const mud = new THREE.Color('#4f4636'); // dark, saturated mud right at the immediate waterline
-    const grass = new THREE.Color('#71805a');
-    const dryGrass = new THREE.Color('#95935f');
-    // Real Cornish cliffs (slate/shale) are much darker and more dramatic than a
-    // flat mid-grey: near-black in the sheltered lower rock, a warmer bleached
-    // grey-tan higher up where it's exposed to sun and salt, with dark banded
-    // strata running through both - not a uniform "rock" colour at all.
-    const rockDark = new THREE.Color('#241f1a');
-    const rockMid = new THREE.Color('#5a5346');
-    const rockLight = new THREE.Color('#8c8170');
-    const turnedSand = new THREE.Color('#7c6142'); // freshly dug/piled sand - richer, darker, "just turned"
-    const tmp = new THREE.Color();
+  // Fine-mesh height at one fine vertex (fi, fj): smooth Catmull-Rom interpolation
+  // of the coarse height field, sharpened back toward the raw (bilinear) coarse
+  // value right where the player has actually disturbed the ground - the wide
+  // bicubic stencil otherwise rounds off a freshly dug/piled cell enough that a
+  // scoop reads as a soft dimple rather than a defined pit - plus a genuine fine
+  // noise detail layer (grain/ripple) that's stronger on soft sand than bare rock
+  // and locally amplified over disturbed cells so scoop marks read as a crisper
+  // texture, not just a colour change. Purely cosmetic: never read back for
+  // physics/water/collision, only written into the rendered mesh's Y.
+  _computeFineHeightAt(fi, fj) {
+    const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
+    const smoothH = sampleBicubicCoarse(this.height, fx, fz);
+    const dist = THREE.MathUtils.clamp(sampleBilinearCoarse(this.disturbance, fx, fz), 0, 1);
+    let h = smoothH;
+    if (dist > 0.01) {
+      const sharpH = sampleBilinearCoarse(this.height, fx, fz);
+      h = smoothH + (sharpH - smoothH) * dist * 0.85;
+    }
+    const hardness = sampleBilinearCoarse(this.hardness, fx, fz);
+    const wx = fi * FINE_CELL, wz = fj * FINE_CELL;
+    const detailAmp = 1 - hardness * 0.85;
+    const micro1 = nFine1.fbm(wx * 2.2, wz * 2.2, 2) * 0.026 * detailAmp;
+    const micro2 = nFine2.fbm(wx * 7.6 + 91, wz * 7.6 + 91, 2) * 0.011 * detailAmp * (1 + dist * 1.6);
+    return h + micro1 + micro2;
+  }
 
-    for (let j = 0; j < GRID; j++) {
-      for (let i = 0; i < GRID; i++) {
-        const k = idx(i, j);
-        const t = (j * CELL) / SIZE;
-        const hardness = this.hardness[k];
-        const wet = this.moisture[k];
+  // Fine-vertex colour, mirroring the old coarse _updateColors() formula almost
+  // exactly (same palette, same logic) but sampled continuously and - crucially -
+  // with its cavity/AO check re-tuned to the shovel's own scale (~0.55m) instead
+  // of the old ~1.6m coarse offset, which was wider than an entire scoop and so
+  // could barely detect one at all. Dug basins vs piled rims now get visibly
+  // different tinting (darker/damp vs lighter/dry), not just a shared "disturbed"
+  // colour - this plus the sharpened geometry above is what makes a scoop read as
+  // an actual hole rather than a colour smudge.
+  _colorAt(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
+    const P = this._pal;
+    const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
+    const t = (fj * FINE_CELL) / SIZE;
 
-        // slope for rock exposure on steep faces
-        const hL = this.height[idx(Math.max(0, i - 1), j)];
-        const hR = this.height[idx(Math.min(GRID - 1, i + 1), j)];
-        const hD = this.height[idx(i, Math.max(0, j - 1))];
-        const hU = this.height[idx(i, Math.min(GRID - 1, j + 1))];
-        const slope = (Math.abs(hR - hL) + Math.abs(hU - hD)) / (4 * CELL);
+    const base = this._cBase.copy(P.sand).lerp(P.grass, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
+    base.lerp(P.dryGrass, 0.15 * Math.max(0, 1 - t * 3));
 
-        let base = sand.clone().lerp(grass, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
-        base.lerp(dryGrass, 0.15 * Math.max(0, 1 - t * 3));
+    const grassPatch = THREE.MathUtils.clamp((n1.fbm(fx * 0.15 + 300, fz * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
+    const clifftopGrass = THREE.MathUtils.clamp((h - 4.5) / 3.5, 0, 1)
+      * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1) * grassPatch;
+    base.lerp(P.grass, clifftopGrass * 0.85);
 
-        // Clifftop plateau: flat high ground can carry grass, but only in patches
-        // (real clifftop grass clings to ledges and pockets of soil, it doesn't
-        // blanket the whole rock uniformly) - gated by its own noise so most of
-        // the flat high ground still reads as bare rock, with grass tufts only
-        // where the patch noise says there's actually soil.
-        const grassPatch = THREE.MathUtils.clamp((n1.fbm(i * 0.15 + 300, j * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
-        const clifftopGrass = THREE.MathUtils.clamp((this.height[k] - 4.5) / 3.5, 0, 1)
-          * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1) * grassPatch;
-        base.lerp(grass, clifftopGrass * 0.85);
+    const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1);
+    const rockHeightT = THREE.MathUtils.clamp((h - 2) / 9, 0, 1);
+    const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, rockHeightT * 0.8).lerp(P.rockDark, (1 - rockHeightT) * 0.5);
+    base.lerp(rockTone, rockExposure);
+    if (rockExposure > 0.2) {
+      const strataPhase = fi * FINE_CELL * 0.32 + h * 2.6;
+      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+      base.lerp(P.rockDark, strata * 0.32 * rockExposure);
+      const fineStrata = Math.sin(strataPhase * 2.7 + 1.4) * 0.5 + 0.5;
+      base.lerp(P.rockDark, fineStrata * 0.14 * rockExposure);
+    }
+    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.7);
 
-        // Rock goes from a warm, sun-bleached grey-tan high on the cliff down to
-        // near-black in the sheltered lower rock - real slate is never one flat
-        // rock colour. Height alone (relative to the local rock's own base, not
-        // an absolute number) drives that gradient.
-        const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1);
-        const rockHeightT = THREE.MathUtils.clamp((this.height[k] - 2) / 9, 0, 1);
-        const rockTone = rockMid.clone().lerp(rockLight, rockHeightT * 0.8).lerp(rockDark, (1 - rockHeightT) * 0.5);
-        base.lerp(rockTone, rockExposure);
-        // Strata: real slate's bedding lines run at a steep diagonal across the
-        // WHOLE cliff face, not stacked flat like pancakes - mixing world x into
-        // the phase alongside height (instead of height alone) tilts the bands so
-        // they read as sloped strata sweeping across the rock, the way the
-        // reference photo's cliff actually looks, rather than horizontal rings.
-        if (rockExposure > 0.2) {
-          const strataPhase = i * CELL * 0.32 + this.height[k] * 2.6;
-          const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-          base.lerp(rockDark, strata * 0.32 * rockExposure);
-          // A second, finer band on top breaks up any residual flatness/banding
-          // regularity - real strata isn't perfectly periodic.
-          const fineStrata = Math.sin(strataPhase * 2.7 + 1.4) * 0.5 + 0.5;
-          base.lerp(rockDark, fineStrata * 0.14 * rockExposure);
-        }
-        base.lerp(rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.7);
-        // A single linear wet->sand blend reads as one flat "damp" tone everywhere
-        // water has ever been. Real banks are muddier the closer they sit to the
-        // water's edge right now - so bias a second, darker mud tone toward only
-        // the highest moisture values (biased with a square), layered on top of
-        // the broader damp-sand blend rather than replacing it.
-        const wetT = THREE.MathUtils.clamp(wet, 0, 1);
-        base.lerp(wetSand, wetT * 0.85);
-        base.lerp(mud, wetT * wetT * 0.55);
+    const wetT = THREE.MathUtils.clamp(wet, 0, 1);
+    base.lerp(P.wetSand, wetT * 0.85);
+    base.lerp(P.mud, wetT * wetT * 0.55);
 
-        // Freshly disturbed sand (just dug out, or just piled into a spoil rim) reads
-        // as a distinct, richer "turned earth" tone that weathers back over about a
-        // minute (see update()) - a plain height change in the same colour as
-        // everything else barely registers as "material actually moved."
-        base.lerp(turnedSand, THREE.MathUtils.clamp(this.disturbance[k], 0, 1) * 0.8);
+    // Dug basins (cavity > 0) read as a distinctly darker, damp "just turned"
+    // tone; piled rims (cavity < 0) read lighter/drier - stronger than the old
+    // single shared "disturbed" tint so a hole and its spoil heap read as visually
+    // different things, the way real turned sand actually does.
+    const distT = THREE.MathUtils.clamp(disturbance, 0, 1);
+    if (cavity > 0) base.lerp(P.turnedSandDug, distT * 0.8);
+    else base.lerp(P.turnedSand, distT * 0.75);
 
-        // Cheap cavity shading (a poor man's AO): sample a couple of cells further out
-        // than the slope check above - a dug hole is wider than one cell, so comparing
-        // against immediate neighbours alone barely shows it. A basin reads darker,
-        // a rim reads lighter, which sells the "you actually dug that" feel even
-        // before the real shadow map catches up.
-        const i2L = Math.max(0, i - 2), i2R = Math.min(GRID - 1, i + 2);
-        const j2D = Math.max(0, j - 2), j2U = Math.min(GRID - 1, j + 2);
-        const wideAvg = (this.height[idx(i2L, j)] + this.height[idx(i2R, j)]
-          + this.height[idx(i, j2D)] + this.height[idx(i, j2U)]) / 4;
-        const cavity = THREE.MathUtils.clamp((wideAvg - this.height[k]) * 0.9, -0.4, 1);
-        if (cavity > 0) base.multiplyScalar(1 - cavity * 0.5);
-        else base.multiplyScalar(1 - cavity * 0.22); // rims catch noticeably more light
+    // Moderated from an earlier pass that clamped cavity up to 1.3 and darkened by
+    // up to 0.62 - combined with turnedSandDug that read as a near-black void
+    // rather than a shadowed damp basin. Still a strong, unambiguous "this is a
+    // hole" cue (verified in-browser - see deployment notes), just not literally black.
+    if (cavity > 0) base.multiplyScalar(1 - Math.min(1, cavity) * 0.5);
+    else base.multiplyScalar(1 - cavity * 0.24); // rims catch noticeably more light
 
-        tmp.copy(base);
-        this.colors[k * 3 + 0] = tmp.r;
-        this.colors[k * 3 + 1] = tmp.g;
-        this.colors[k * 3 + 2] = tmp.b;
+    out.copy(base);
+  }
+
+  // Recomputes height, normals and vertex colour for every fine vertex covering
+  // coarse cell range [i0,i1] x [j0,j1] (inclusive). Called both for small,
+  // padded regions right after a dig/smooth/pile edit (cheap - a handful of
+  // coarse cells, so a handful of fine vertices) and, one band of coarse rows at
+  // a time, by the continuous background scan in update() (see
+  // FINE_SCAN_ROWS_PER_FRAME) that keeps slower erosion/moisture/tide-driven
+  // height drift flowing through without ever touching the whole ~310K-vertex
+  // mesh in a single frame.
+  _flushFineRegion({ i0, i1, j0, j1 }) {
+    const fi0 = i0 * RENDER_SUBDIV, fi1 = Math.min(FINE_GRID - 1, i1 * RENDER_SUBDIV);
+    const fj0 = j0 * RENDER_SUBDIV, fj1 = Math.min(FINE_GRID - 1, j1 * RENDER_SUBDIV);
+    const fh = this.fineHeight;
+    const pos = this.geometry.attributes.position;
+    const posArr = pos.array;
+
+    for (let fj = fj0; fj <= fj1; fj++) {
+      for (let fi = fi0; fi <= fi1; fi++) {
+        const k = fj * FINE_GRID + fi;
+        const h = this._computeFineHeightAt(fi, fj);
+        fh[k] = h;
+        posArr[k * 3 + 1] = h;
       }
     }
+
+    const normal = this.geometry.attributes.normal;
+    const normArr = normal.array;
+    const colArr = this.colors;
+    // AO/cavity sample radius: ~0.55m, matching the shovel scoop's own scale
+    // (DIG_LEN/DIG_WID in main.js) - the old coarse version used a ~1.6m offset,
+    // wider than an entire scoop, which is a big part of why a dig used to barely
+    // show up as anything more than a colour change.
+    const AO_R = Math.max(1, Math.round(0.55 / FINE_CELL));
+    const outColor = this._cOut || (this._cOut = new THREE.Color());
+
+    for (let fj = fj0; fj <= fj1; fj++) {
+      const jL = fj > 0 ? fj - 1 : 0, jR = fj < FINE_GRID - 1 ? fj + 1 : FINE_GRID - 1;
+      const jAO0 = Math.max(0, fj - AO_R), jAO1 = Math.min(FINE_GRID - 1, fj + AO_R);
+      for (let fi = fi0; fi <= fi1; fi++) {
+        const k = fj * FINE_GRID + fi;
+        const iL = fi > 0 ? fi - 1 : 0, iR = fi < FINE_GRID - 1 ? fi + 1 : FINE_GRID - 1;
+        const hL = fh[fj * FINE_GRID + iL], hR = fh[fj * FINE_GRID + iR];
+        const hD = fh[jL * FINE_GRID + fi], hU = fh[jR * FINE_GRID + fi];
+        const dxWorld = posArr[(fj * FINE_GRID + iR) * 3] - posArr[(fj * FINE_GRID + iL) * 3];
+        const dx = Math.abs(dxWorld) > 1e-6 ? (hR - hL) / dxWorld : 0;
+        const dzWorld = (jR - jL) * FINE_CELL;
+        const dz = dzWorld > 1e-6 ? (hU - hD) / dzWorld : 0;
+        const nx = -dx, ny = 1, nz = -dz;
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        normArr[k * 3] = nx / len; normArr[k * 3 + 1] = ny / len; normArr[k * 3 + 2] = nz / len;
+
+        const h = fh[k];
+        const slope = (Math.abs(dx) + Math.abs(dz)) / 2;
+        const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
+        const hardness = sampleBilinearCoarse(this.hardness, fx, fz);
+        const wet = sampleBilinearCoarse(this.moisture, fx, fz);
+        const disturbance = sampleBilinearCoarse(this.disturbance, fx, fz);
+
+        const iAO0 = Math.max(0, fi - AO_R), iAO1 = Math.min(FINE_GRID - 1, fi + AO_R);
+        const wideAvg = (fh[fj * FINE_GRID + iAO0] + fh[fj * FINE_GRID + iAO1]
+          + fh[jAO0 * FINE_GRID + fi] + fh[jAO1 * FINE_GRID + fi]) / 4;
+        const cavity = THREE.MathUtils.clamp((wideAvg - h) * 1.5, -0.4, 1.0);
+
+        this._colorAt(fi, fj, h, slope, hardness, wet, disturbance, cavity, outColor);
+        colArr[k * 3] = outColor.r; colArr[k * 3 + 1] = outColor.g; colArr[k * 3 + 2] = outColor.b;
+      }
+    }
+
+    pos.needsUpdate = true;
+    normal.needsUpdate = true;
     this.geometry.attributes.color.needsUpdate = true;
+  }
+
+  // Marks a coarse cell range as needing a fine-mesh resync, padded by enough
+  // cells to cover the bicubic stencil's own reach (2 cells) plus a small margin -
+  // called from every player-driven edit (deform/scoopDeform/depositRing/smooth)
+  // so the very next update() flushes just that small local patch immediately,
+  // rather than waiting on the background scan to come back around.
+  _markFineDirty(i0, i1, j0, j1) {
+    const PAD = 3;
+    const ci0 = Math.max(0, i0 - PAD), ci1 = Math.min(GRID - 1, i1 + PAD);
+    const cj0 = Math.max(0, j0 - PAD), cj1 = Math.min(GRID - 1, j1 + PAD);
+    if (!this._fineDirty) { this._fineDirty = { i0: ci0, i1: ci1, j0: cj0, j1: cj1 }; return; }
+    const d = this._fineDirty;
+    d.i0 = Math.min(d.i0, ci0); d.i1 = Math.max(d.i1, ci1);
+    d.j0 = Math.min(d.j0, cj0); d.j1 = Math.max(d.j1, cj1);
   }
 
   // Apply a radial deform. `delta` > 0 raises, < 0 lowers. Returns net volume actually moved.
@@ -483,6 +688,7 @@ export class Terrain {
         }
       }
     }
+    this._markFineDirty(i0, i1, j0, j1);
     return moved;
   }
 
@@ -518,6 +724,7 @@ export class Terrain {
         if (delta < 0) this.hardness[k] *= 0.985;
       }
     }
+    this._markFineDirty(i0, i1, j0, j1);
     return moved;
   }
 
@@ -549,6 +756,7 @@ export class Terrain {
       this.height[k] += amt;
       this.disturbance[k] = Math.min(1, this.disturbance[k] + Math.abs(amt) * 6);
     }
+    this._markFineDirty(i0, i1, j0, j1);
   }
 
   // Local averaging - patting sand flat with the back of the shovel.
@@ -580,6 +788,7 @@ export class Terrain {
         this.hardness[k] *= (1 - 0.01 * falloff);
       }
     }
+    this._markFineDirty(i0, i1, j0, j1);
   }
 
   // Rebuilds the graduated obstruction halo around every non-carried medium/large
@@ -659,21 +868,39 @@ export class Terrain {
   update(dt) {
     this._relaxSlopes(dt);
     if (this._needsSync) {
-      this._syncPositions();
-      this.geometry.computeVertexNormals();
+      // Coarse pick-proxy resync only - cheap, same cost as before this change.
+      // No normals needed (raycasting doesn't use them, and the pick mesh is
+      // never rendered), which is actually one less thing done per frame than
+      // the old code that also ran computeVertexNormals() on this same geometry
+      // every time it was (also) the rendered mesh.
+      this._syncPickPositions();
       this._needsSync = false;
     }
+
+    // Player edits (dig/smooth/pile) get their small local patch of the fine mesh
+    // flushed immediately - cheap, since it's only ever a handful of coarse cells
+    // (padded for the interpolation stencil) at a time.
+    if (this._fineDirty) {
+      this._flushFineRegion(this._fineDirty);
+      this._fineDirty = null;
+    }
+
+    // Continuous low-cost background scan: a handful of coarse rows' worth of
+    // fine mesh gets refreshed every single frame regardless of dirty state, so
+    // slower drift the player didn't directly cause (erosion/sediment carving the
+    // channel, moisture creeping with the tide) still reaches the render mesh -
+    // without ever re-touching the whole ~310K-vertex mesh in one frame (measured
+    // to be the expensive case - see the deployment notes for actual numbers).
+    const scanJ0 = this._scanRow;
+    const scanJ1 = Math.min(GRID - 1, scanJ0 + FINE_SCAN_ROWS_PER_FRAME - 1);
+    this._flushFineRegion({ i0: 0, i1: GRID - 1, j0: scanJ0, j1: scanJ1 });
+    this._scanRow = scanJ1 >= GRID - 1 ? 0 : scanJ1 + 1;
+
     // Freshly turned sand slowly weathers back to its normal colour over roughly
     // a minute - long enough that a dig session reads clearly, short enough that
     // the beach doesn't stay visibly "scarred" forever.
     const decay = Math.exp(-dt / 25);
     for (let k = 0; k < this.disturbance.length; k++) this.disturbance[k] *= decay;
-
-    this._colorDirtyAccum += dt;
-    if (this._colorDirtyAccum > 0.35) {
-      this._colorDirtyAccum = 0;
-      this._updateColors();
-    }
   }
 }
 

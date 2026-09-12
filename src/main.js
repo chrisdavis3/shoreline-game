@@ -115,8 +115,12 @@ const audio = new AudioSystem();
     water.elapsed += water.stepDt;
   }
   terrain.markDirty();
-  terrain._colorDirtyAccum = 1;
   terrain.update(0);
+  // 40 simulated seconds of erosion/sediment/moisture drift just happened before
+  // the player ever sees the level - force the fine render mesh fully in sync
+  // right away rather than waiting for the background scan (see terrain.js
+  // update()) to cycle all the way around.
+  terrain.refreshFineMeshFully();
   water._syncMeshAttrs(terrain);
 }
 
@@ -360,7 +364,11 @@ function computeMoveVector() {
 
 function getShovelTarget() {
   raycaster.setFromCamera({ x: mouse.ndcX, y: mouse.ndcY }, camera);
-  const hit = raycaster.intersectObject(terrain.mesh, false)[0];
+  // Raycast the coarse invisible pick proxy, not the fine rendered mesh - three.js's
+  // core raycaster has no BVH (linear in triangle count), and the rendered mesh is
+  // ~16x denser than before. Only x/z from the hit matter here (see below), so the
+  // coarse proxy's lower-fidelity y is irrelevant.
+  const hit = raycaster.intersectObject(terrain.pickMesh, false)[0];
   if (!hit) return null;
   const point = hit.point;
   const dx = point.x - player.pos.x, dz = point.z - player.pos.z;
