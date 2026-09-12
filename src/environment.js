@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=57';
-import { Noise2D } from './noise.js?v=57';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=58';
+import { Noise2D } from './noise.js?v=58';
 
 const decoNoise = new Noise2D(555);
 
@@ -530,12 +530,26 @@ export function buildSkirt(terrain) {
         y = -6 - dzSea * 0.4;
       } else {
         const n = decoNoise.fbm(x * 0.012, z * 0.012, 4);
-        const rise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
+        // A real Cornish headland is a near-vertical rock face RIGHT at the sand,
+        // not a hill that only reaches real height 100+ metres back - the old
+        // single power curve normalised against SIZE*1.4 (~160m) meant the whole
+        // visible foreground next to the beach was still under 10% risen, reading
+        // as flat brown ground. `nearRise` reaches full height within ~15m so the
+        // cliff is actually there in the same shot as the beach; `farRise` is the
+        // much slower continued climb into believable distant hilltops beyond it.
+        const nearRise = Math.pow(Math.min(1, outside / 15), 0.5);
+        const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
+        const rise = nearRise * 0.75 + farRise * 0.5;
+        // Higher-frequency jagged detail (crags, ledges, gullies) layered only
+        // near the cliff face itself (gated by nearRise) - the smooth `n` field
+        // alone reads as a rounded hill, not fractured rock.
+        const crag = decoNoise.fbm(x * 0.07 + 250, z * 0.07 + 250, 5) - 0.5;
+        const crag2 = decoNoise.fbm(x * 0.22 + 700, z * 0.22 + 700, 3) - 0.5;
         const edgeY = terrain.sampleHeightBilinear(
           THREE.MathUtils.clamp(x, 1, SIZE - 1),
           THREE.MathUtils.clamp(z, 1, SIZE - 1),
         );
-        y = edgeY + rise * (26 + n * 14);
+        y = edgeY + rise * (30 + n * 16) + crag * 11 * nearRise + crag2 * 4 * nearRise;
         if (dzSea > 0) y -= dzSea * 0.6; // taper down toward the sea horizon at the far corners
       }
       positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
