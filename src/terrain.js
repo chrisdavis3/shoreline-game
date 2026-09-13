@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=94';
+import { Noise2D } from './noise.js?v=98';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -16,7 +16,7 @@ import { Noise2D } from './noise.js?v=94';
 // height array (old falls position, no lake) was overwriting the new
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
-export const TERRAIN_VERSION = 3;
+export const TERRAIN_VERSION = 6;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)
@@ -870,49 +870,70 @@ export class Terrain {
         // Valley-floor centreline elevation: flat-ish high mountain plateau
         // above the falls, a steep (mostly near-vertical in the middle) drop
         // through the falls themselves, then a real but gentler descent down
-        // the diggable river valley to the lake.
+        // the diggable river valley to the lake - all only right on the
+        // river's own centreline. Off to the side, see sideRampH below.
         let floorH;
         if (t <= L2_T_FALL0) {
           floorH = L2_TOP_H;
-        } else if (t <= L2_T_FALL1) {
-          const ft = (t - L2_T_FALL0) / (L2_T_FALL1 - L2_T_FALL0);
-          // Quintic smoothstep: zero slope at both ends (so it hands off
-          // smoothly to the flat plateau above and the levelling-out pool
-          // below), steepest through the middle - that middle third works out
-          // to roughly 80 degrees, a genuine near-vertical cliff face, not
-          // just a steep hill.
-          const eased = ft * ft * ft * (ft * (ft * 6 - 15) + 10);
-          floorH = L2_TOP_H - (L2_TOP_H - L2_POOL_H) * eased;
         } else {
-          const rt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
-          // The working valley floor descends in 3 real steps (4 flat
-          // terraces) rather than one smooth grade - each step is a small
-          // waterfall right on the river's own centreline (same quintic-ease
-          // technique as the main falls, just much smaller), giving the user's
-          // "3 or so small elevation changes with small waterfalls" - while a
-          // parallel continuous ramp (the OLD single eased2 curve) still runs
-          // the same total drop over the whole length, so there's always a
-          // driveable grade beside the steps for the vehicles. Blended between
-          // the two by distance from the river's centreline.
-          const STEPS = 3;
-          const stepDrop = (L2_POOL_H - L2_LAKE_H) / (STEPS + 1);
-          const bandF = THREE.MathUtils.clamp(rt, 0, 0.99999) * (STEPS + 1);
-          const band = Math.floor(bandF);
-          const within = bandF - band;
-          const stepStart = 0.93; // each terrace is flat for its first 93%, then drops - narrow enough to read as a real small step, not just a gentle grade
-          let dropFrac = 0;
-          if (within > stepStart) {
-            const dt2 = (within - stepStart) / (1 - stepStart);
-            dropFrac = dt2 * dt2 * (3 - 2 * dt2);
+          let centerH;
+          if (t <= L2_T_FALL1) {
+            const ft = (t - L2_T_FALL0) / (L2_T_FALL1 - L2_T_FALL0);
+            // Quintic smoothstep: zero slope at both ends (so it hands off
+            // smoothly to the flat plateau above and the levelling-out pool
+            // below), steepest through the middle - that middle third works
+            // out to roughly 80 degrees, a genuine near-vertical cliff face,
+            // not just a steep hill.
+            const eased = ft * ft * ft * (ft * (ft * 6 - 15) + 10);
+            centerH = L2_TOP_H - (L2_TOP_H - L2_POOL_H) * eased;
+          } else {
+            const rt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
+            // The working valley floor descends in 3 real steps (4 flat
+            // terraces) rather than one smooth grade - each step is a small
+            // waterfall right on the river's own centreline (same quintic-
+            // ease technique as the main falls, just much smaller), giving
+            // the user's "3 or so small elevation changes with small
+            // waterfalls".
+            const STEPS = 3;
+            const stepDrop = (L2_POOL_H - L2_LAKE_H) / (STEPS + 1);
+            const bandF = THREE.MathUtils.clamp(rt, 0, 0.99999) * (STEPS + 1);
+            const band = Math.floor(bandF);
+            const within = bandF - band;
+            const stepStart = 0.93; // each terrace is flat for its first 93%, then drops - narrow enough to read as a real small step, not just a gentle grade
+            let dropFrac = 0;
+            if (within > stepStart) {
+              const dt2 = (within - stepStart) / (1 - stepStart);
+              dropFrac = dt2 * dt2 * (3 - 2 * dt2);
+            }
+            centerH = (L2_POOL_H - band * stepDrop) - stepDrop * dropFrac;
           }
-          const terraceH = (L2_POOL_H - band * stepDrop) - stepDrop * dropFrac;
 
-          const eased2 = 1 - Math.pow(1 - rt, 1.6);
-          const rampH = L2_POOL_H - (L2_POOL_H - L2_LAKE_H) * eased2;
+          // "Ramping sidewall": the falls' own ~13m of run can't fit a
+          // climbable slope for a 45m drop at any easing curve - so rather
+          // than a separate ramp mechanism (confirmed live: a discrete
+          // switchback both looked wrong, a "canyon that doesn't need to be
+          // there", AND broke on its own - see version history), the sides
+          // just use a single, much gentler descent spread across nearly the
+          // whole rest of the map's length instead, connecting the flat
+          // plateau above to the flat valley floor below directly. Averages
+          // well under VehicleBase's climbStall over that distance.
+          const st = THREE.MathUtils.clamp((t - L2_T_FALL0) / (1 - L2_T_FALL0), 0, 1);
+          const sideEased = 1 - Math.pow(1 - st, 1.5);
+          const sideRampH = L2_TOP_H - (L2_TOP_H - L2_LAKE_H) * sideEased;
 
-          const channelHalf = 3.0 + 2.0 * rt;
-          const rampBlend = THREE.MathUtils.clamp((distCells - channelHalf) / 6.0, 0, 1);
-          floorH = THREE.MathUtils.lerp(terraceH, rampH, rampBlend);
+          // Close to the river/falls, the dramatic centreline wins - a real
+          // waterfall shouldn't be too wide; well off to the side, the ramp
+          // does. Narrower through the falls' own drop, wider once the
+          // terraced valley starts (where the centreline itself is already
+          // fairly gentle, so the handoff can be more gradual).
+          // A hard switch right at L2_T_FALL1 (9 in the falls zone, 20 in the
+          // terrace zone) meant a point already fully on sideRampH just
+          // above the pool could suddenly fall partway back onto centreH
+          // just below it - a sharp local cliff right at the pool, confirmed
+          // live. Transitions smoothly across the boundary instead.
+          const sideBlendWidth = THREE.MathUtils.lerp(9, 20, THREE.MathUtils.smoothstep(t, L2_T_FALL1 - 0.02, L2_T_FALL1 + 0.05));
+          const sideBlend = THREE.MathUtils.clamp((distCells - 6) / sideBlendWidth, 0, 1);
+          floorH = THREE.MathUtils.lerp(centerH, sideRampH, sideBlend);
         }
 
         // Gorge floor around the falls, widening into a real (if still
@@ -940,24 +961,22 @@ export class Terrain {
         const wallGain = L2_WALL_HEIGHT * (1 - 0.55 * Math.min(1, t * 1.15));
         let wallRise = Math.pow(Math.min(1, distToWallEdge / 22), 0.6) * wallGain;
 
-        // The plateau, the lake, the falls' own banks and the pool are all
-        // meant to read as one open highland with the falls as its one real
-        // drop - not a walled canyon. A first version kept full-height canyon
-        // walls through here and tried to punch a switchback ramp through
-        // them - confirmed live as both the wrong shape (a "canyon that
-        // doesn't need to be there" between the pool and the plateau) AND
-        // fragile (the ramp's edges sat flush against a near-vertical drop,
-        // which the water sim's own sand-slumping ate during the startup
-        // priming burst - see the erosion/dried-lake reports). Almost no wall
-        // at all through the whole upper stretch instead, ramping back up to
-        // the ordinary canyon walls only once the terraced working valley
-        // (see below) actually starts - no ramp/path mechanism needed since
-        // there's no cliff left to climb around.
-        const wallOpenT0 = L2_T_FALL1 + 0.05, wallOpenT1 = L2_T_FALL1 + 0.22;
-        const wallStrength = t <= wallOpenT0
-          ? 0.04
-          : 0.04 + 0.96 * THREE.MathUtils.smoothstep(t, wallOpenT0, wallOpenT1);
-        wallRise *= wallStrength;
+        // The plateau, the lake, the falls' own banks, the pool and the
+        // working valley below are all meant to read as one continuously
+        // descending open highland with the falls/steps as its only real
+        // drops - not a walled canyon. Two earlier attempts got this wrong:
+        // full-height canyon walls throughout (confirmed live as an unwanted
+        // "canyon" between the pool and the plateau) with a switchback ramp
+        // punched through them (fragile - eaten by the water sim's own sand-
+        // slumping during startup priming); then bringing the walls BACK once
+        // the terraced valley started, which fought against sideRampH's own
+        // descent there and produced a "ski jump" profile (a dip, then an
+        // unwanted hump climbing back up, before the drop resumes) - drawn
+        // out and confirmed live. Wall strength now stays low for the whole
+        // level instead of ever ramping back up - sideRampH above already
+        // carries the descent continuously the entire way to the exit lake,
+        // so there's nothing left for a real canyon wall to usefully add.
+        wallRise *= 0.04;
 
         let h = floorH + wallRise;
 

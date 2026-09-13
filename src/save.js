@@ -4,7 +4,7 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
-import { TERRAIN_VERSION } from './terrain.js?v=94';
+import { TERRAIN_VERSION } from './terrain.js?v=98';
 
 // Each level gets its own independent save slot, keyed by level id, so
 // progress in one never overwrites or gets clobbered by the other. Level 1's

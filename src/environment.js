@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=94';
-import { Noise2D } from './noise.js?v=94';
+} from './terrain.js?v=98';
+import { Noise2D } from './noise.js?v=98';
 
 const decoNoise = new Noise2D(555);
 
@@ -933,7 +933,15 @@ export function buildSkirtLevel2(terrain) {
       if (outside <= 0) {
         y = -60; // directly under the real (simulated) terrain - hidden
       } else {
-        const nearRise = Math.pow(Math.min(1, outside / 18), 0.5);
+        // Was ramping to full height within just 18m of the map edge - for
+        // level 2, whose actual playable width puts the river/lake only
+        // ~50-60m from that edge (nowhere near level 1's much larger
+        // coastline), that read as sheer canyon walls looming right over the
+        // play area ("a giant valley... that doesn't make sense") rather
+        // than the intended hazy, distant backdrop. Stretched out so it stays
+        // low well past the boundary and only rises into real peaks far
+        // beyond normal camera range.
+        const nearRise = Math.pow(Math.min(1, outside / 85), 0.5);
         const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.6)), 0.75);
         const rise = nearRise * 0.7 + farRise * 0.55;
         const warpX_ = x + decoNoise.fbm(x * 0.008 + 1000, z * 0.008 + 1000, 3) * 55;
