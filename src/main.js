@@ -1,13 +1,13 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=79';
-import { WaterSim } from './water.js?v=79';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=79';
-import { scatterRocks, Rock } from './rocks.js?v=79';
-import { Player } from './player.js?v=79';
-import { AudioSystem } from './audio.js?v=79';
-import { Particles } from './particles.js?v=79';
-import { Debris } from './debris.js?v=79';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=79';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=80';
+import { WaterSim } from './water.js?v=80';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=80';
+import { scatterRocks, Rock } from './rocks.js?v=80';
+import { Player } from './player.js?v=80';
+import { AudioSystem } from './audio.js?v=80';
+import { Particles } from './particles.js?v=80';
+import { Debris } from './debris.js?v=80';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=80';
 
 // Bumped alongside every ?v=N cache-bust across the project (see version.txt,
 // fetched below) - mobile Safari in particular can keep an old tab's JS
@@ -17,7 +17,7 @@ import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 79;
+const APP_VERSION = 80;
 
 // ---------- renderer / scene / camera ----------
 
@@ -275,7 +275,15 @@ joystickZone.addEventListener('pointermove', (e) => {
   joystickThumb.style.top = `${joystickCy + ty - 23}px`;
   touch.x = tx / JOY_RADIUS;
   touch.y = ty / JOY_RADIUS;
-  touch.run = dist > JOY_RADIUS * 0.8;
+  // Used to auto-trigger run past 80% of the joystick's radius - but `dist` is
+  // the RAW, unclamped distance from the initial touch-down point, which keeps
+  // growing even after the visible thumb maxes out at the edge if a finger
+  // drifts further during play. On a real touchscreen that threshold (43px)
+  // is so easily and persistently exceeded by ordinary directional input that
+  // sprint read as "always on" - reported directly: "sprint seems to be
+  // always enabled for mobile". Removed - the dedicated Sprint button is the
+  // only way to sprint on touch now, same as Space bar is the only way on
+  // keyboard, no ambiguous implicit trigger.
 });
 function joystickEnd(e) {
   if (e.pointerId !== joystickId) return;
