@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=103';
+import { Noise2D } from './noise.js?v=104';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -16,7 +16,7 @@ import { Noise2D } from './noise.js?v=103';
 // height array (old falls position, no lake) was overwriting the new
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
-export const TERRAIN_VERSION = 7;
+export const TERRAIN_VERSION = 8;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)
@@ -36,7 +36,7 @@ function idx(i, j) { return j * GRID + i; }
 // rather than forking the engine. Callers (main.js) must call setActiveLevel()
 // BEFORE constructing Terrain/WaterSim - both read this synchronously at
 // construction time, there's no live-switching mid-session.
-export const LEVEL_IDS = ['level1', 'level2'];
+export const LEVEL_IDS = ['level1', 'level2', 'level3'];
 let ACTIVE_LEVEL = 'level1';
 export function setActiveLevel(id) { ACTIVE_LEVEL = LEVEL_IDS.includes(id) ? id : 'level1'; }
 export function getActiveLevel() { return ACTIVE_LEVEL; }
@@ -113,8 +113,78 @@ function streamCenterXLevel2(z) {
   return L2_LIP_X + meander;
 }
 
+// ---------------------------------------------------------------------------
+// Level 3 ("Millwright's Fork"): a valley downstream of Highfall Gorge where a
+// single river forks around a small wooded island - one branch (the old mill
+// race) used to feed a water wheel, but a rockslide silted it up, diverting
+// most of the flow into the other, now-larger fork. z=0 is the upstream end
+// (the river arrives off-map, same "0 = where the water comes from" convention
+// level1's stream source and level2's mountainside top both use), z=SIZE is
+// the downstream exit (the valley continues, unbuilt, toward a future level 4).
+//
+// Unlike level1 (a single meandering stream carved into noisy dune terrain,
+// which needed the elaborate downhill-ratchet + cross-slope-limiter passes
+// below to stay monotonic) this follows level2's simpler, safer approach: the
+// valley floor's elevation is an explicit, already-monotonic function of t
+// (see l3FloorH), so both channels are carved INTO that guaranteed-downhill
+// profile rather than derived from noisy terrain that then needs correcting.
+export const L3_TOP_H = 14;         // upstream valley-floor height
+export const L3_EXIT_H = 2;         // downstream exit height
+export const L3_T_FORK0 = 0.26;     // t where the two channels start separating
+export const L3_T_FORK1 = 0.38;     // t where they reach full separation (island begins)
+export const L3_T_REJOIN0 = 0.74;   // t where they start coming back together
+export const L3_T_REJOIN1 = 0.87;   // t where they're fully merged again
+export const L3_SEPARATION = 15;    // metres each channel's centre sits off the shared base line, at full separation
+export const L3_CHANNEL_HALFWIDTH = 2.4; // metres, per channel
+export const L3_CHANNEL_DEPTH = 1.3;     // metres, per channel, away from the weir/sill
+export const L3_T_WEIR = 0.55;      // the mill race's own small weir/drop, right at the wheel
+export const L3_WEIR_WIDTH = 0.03;  // t half-width of the weir's rise (and, mirrored, its later fall-back-level before the rejoin)
+export const L3_WEIR_DROP = 1.6;    // metres the mill race's bed drops at the weir
+export const L3_T_SILL = 0.46;      // rockslide blockage in the mill race, upstream of the weir
+export const L3_SILL_WIDTH = 0.035; // t sigma of the blockage's (Gaussian) footprint
+export const L3_SILL_HEIGHT = 1.3;  // metres the blockage shallows the mill race's own bed (clamped so it never fully seals it)
+export const L3_ISLAND_AMP = 3.2;   // metres the island rises above the shared valley floor at full separation
+
+export function l3BaseCenterX(z) {
+  const t = z / SIZE;
+  return SIZE * 0.5 + Math.sin(t * 3.6 + 0.4) * SIZE * 0.05 + n2.fbm(2, t * 3 + 40, 2) * SIZE * 0.025;
+}
+
+// 0 before the fork, ramps to 1 by full separation, holds at 1 through the
+// island, ramps back to 0 by the rejoin - continuous throughout (see the
+// terrain.js header note on never hard-cutting a blend: this is the same
+// min-of-two-smoothsteps "plateau" trick used below for the weir/tailrace).
+function l3SeparationT(t) {
+  const up = THREE.MathUtils.smoothstep(t, L3_T_FORK0, L3_T_FORK1);
+  const down = 1 - THREE.MathUtils.smoothstep(t, L3_T_REJOIN0, L3_T_REJOIN1);
+  return Math.min(up, down);
+}
+
+export function l3MainChannelX(z) {
+  const t = z / SIZE;
+  return l3BaseCenterX(z) + l3SeparationT(t) * L3_SEPARATION;
+}
+export function l3RaceChannelX(z) {
+  const t = z / SIZE;
+  return l3BaseCenterX(z) - l3SeparationT(t) * L3_SEPARATION;
+}
+
+// A 0->1->0 "plateau" over t: rises smoothly around `riseCenter` (+/- riseWidth),
+// stays at 1, then eases back down to 0 between fallStart and fallEnd. Used for
+// the mill race's weir: it drops at the weir and STAYS dropped through its own
+// tailrace, but must smoothly rejoin the main channel's (shallower, by then)
+// bed before the two channels actually merge in x - a permanent step-down
+// would otherwise leave a real cliff right at the confluence.
+function l3Plateau(t, riseCenter, riseWidth, fallStart, fallEnd) {
+  const up = THREE.MathUtils.smoothstep(t, riseCenter - riseWidth, riseCenter + riseWidth);
+  const down = 1 - THREE.MathUtils.smoothstep(t, fallStart, fallEnd);
+  return Math.min(up, down);
+}
+
 function streamCenterX(z) {
-  return ACTIVE_LEVEL === 'level2' ? streamCenterXLevel2(z) : streamCenterXLevel1(z);
+  if (ACTIVE_LEVEL === 'level2') return streamCenterXLevel2(z);
+  if (ACTIVE_LEVEL === 'level3') return l3BaseCenterX(z);
+  return streamCenterXLevel1(z);
 }
 
 // The coastline's t-threshold (0..1, inland->sea) as a function of column i.
@@ -153,6 +223,17 @@ function coastTContinuousLevel2(ci) {
   return L2_LAKE_T0 + coastRoughNoise.fbm(ci * 0.05, 80, 2) * 0.015;
 }
 
+// Level 3 has no sea or still lake either - the river (both forks, rejoined by
+// here) simply continues downstream off the map toward the unbuilt next
+// valley. Reuses the same coastT/tide-relaxation machinery so that "downstream
+// edge" doesn't pool up indefinitely (see water.js's sea-coupling step) - a
+// high, near-constant threshold near the map's far edge, same idea as level2's
+// lake threshold.
+const L3_EXIT_T0 = 0.93;
+function coastTContinuousLevel3(ci) {
+  return L3_EXIT_T0 + coastRoughNoise.fbm(ci * 0.045, 130, 2) * 0.012;
+}
+
 function coastTContinuousLevel1(ci) {
   const u = THREE.MathUtils.clamp(ci, 0, GRID - 1) / (GRID - 1);
   const crescent = Math.sin(Math.PI * u); // 0 at both headlands, 1 at the bay's centre
@@ -173,7 +254,9 @@ function coastTContinuousLevel1(ci) {
 
 export function coastT(i) {
   const ci = Math.round(THREE.MathUtils.clamp(i, 0, GRID - 1));
-  return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(ci) : coastTContinuousLevel1(ci);
+  if (ACTIVE_LEVEL === 'level2') return coastTContinuousLevel2(ci);
+  if (ACTIVE_LEVEL === 'level3') return coastTContinuousLevel3(ci);
+  return coastTContinuousLevel1(ci);
 }
 
 // Continuous (non-staircased) version for callers evaluating at fractional i
@@ -181,7 +264,9 @@ export function coastT(i) {
 // since most callers index one specific simulation column.
 function coastTSmooth(i) {
   const c = THREE.MathUtils.clamp(i, 0, GRID - 1);
-  return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(c) : coastTContinuousLevel1(c);
+  if (ACTIVE_LEVEL === 'level2') return coastTContinuousLevel2(c);
+  if (ACTIVE_LEVEL === 'level3') return coastTContinuousLevel3(c);
+  return coastTContinuousLevel1(c);
 }
 
 const edgeRoughNoise = new Noise2D(2718);
@@ -233,11 +318,12 @@ const edgeRoughNoise = new Noise2D(2718);
 // and only render positions - the (i, j) simulation grid underneath stays a
 // rectangle.
 export function insetCells(i, t) {
-  // Level 2 is a valley cut by rock walls, not an organic coastline - it wants
-  // straight edges right out to the map boundary (the walls themselves already
-  // supply all the shape), not level 1's coastline-tracing taper. Returning 0
-  // here makes warpX() below a no-op automatically (see its own early-out).
-  if (ACTIVE_LEVEL === 'level2') return 0;
+  // Level 2 and level 3 are both valleys, not an organic coastline - they want
+  // straight edges right out to the map boundary (the valley walls/slopes
+  // themselves already supply all the shape), not level 1's coastline-tracing
+  // taper. Returning 0 here makes warpX() below a no-op automatically (see its
+  // own early-out).
+  if (ACTIVE_LEVEL === 'level2' || ACTIVE_LEVEL === 'level3') return 0;
   const ct = coastTSmooth(i);
   // 0 = a narrow rocky point (real coastline already close to the dune line),
   // 1 = a wide sandy apron in front of this column.
@@ -486,6 +572,7 @@ export class Terrain {
 
   _generate() {
     if (ACTIVE_LEVEL === 'level2') this._generateLevel2();
+    else if (ACTIVE_LEVEL === 'level3') this._generateLevel3();
     else this._generateLevel1();
   }
 
@@ -1091,6 +1178,125 @@ export class Terrain {
     this.height.set(this.bedrock);
   }
 
+  // Level 3's terrain: a river forking around a small wooded island, downstream
+  // of level 2's gorge. See the L3_* constants and l3*/streamCenterX helpers
+  // above - the valley-floor elevation is an explicit, already-monotonic
+  // function of t (l3FloorH below), same trick level2's floorH uses, so there's
+  // no need for level1's separate downhill-ratchet/cross-slope-limiter passes:
+  // a channel carved into an already-monotonic profile can't develop a hump.
+  //
+  // Per this session's own hard-won lessons: kept deliberately OPEN (a gentle
+  // ~12m grade across the whole map, modest wall rise) rather than a walled
+  // canyon - the only genuinely steep/dramatic feature is the mill race's own
+  // small weir, and even that is a single ~1.6m step, not a cliff.
+  _generateLevel3() {
+    const l3FloorH = (t) => THREE.MathUtils.lerp(L3_TOP_H, L3_EXIT_H, t);
+
+    for (let j = 0; j < GRID; j++) {
+      for (let i = 0; i < GRID; i++) {
+        const x = i * CELL, z = j * CELL;
+        const t = z / SIZE;
+
+        const baseX = l3BaseCenterX(z);
+        const sepT = l3SeparationT(t);
+        const mainX = baseX + sepT * L3_SEPARATION;
+        const raceX = baseX - sepT * L3_SEPARATION;
+        const floor = l3FloorH(t);
+
+        // The mill race's own weir: a plateau (0 before, 1 through the weir and
+        // its tailrace, back to 0 before the rejoin - see l3Plateau's comment)
+        // that deepens the race channel's own carve amplitude, NOT a separate
+        // "local floor" - deepening the carve (rather than dropping a whole
+        // row's baseline) keeps the drop spatially localised to the race
+        // channel itself via the same Gaussian falloff as the ordinary carve,
+        // so it can't bleed sideways onto the island or the open floor between
+        // the two channels.
+        const weirT = l3Plateau(t, L3_T_WEIR, L3_WEIR_WIDTH, L3_T_REJOIN0 - 0.08, L3_T_REJOIN0);
+        // The upstream rockslide blockage: a Gaussian bump in t (not a plateau -
+        // it's a single localised pile of debris, not an ongoing feature),
+        // shallowing the race channel's carve right where it sits. Clamped so
+        // it can reduce the channel to a bare trickle-depth trench but never
+        // fully invert/seal it outright.
+        const sillT = Math.exp(-Math.pow((t - L3_T_SILL) / L3_SILL_WIDTH, 2));
+
+        const dMain = Math.abs(x - mainX);
+        const dRace = Math.abs(x - raceX);
+        const carveMain = Math.exp(-Math.pow(dMain / L3_CHANNEL_HALFWIDTH, 2)) * L3_CHANNEL_DEPTH;
+        const raceAmp = Math.max(0.15, L3_CHANNEL_DEPTH + weirT * L3_WEIR_DROP - sillT * L3_SILL_HEIGHT);
+        const carveRace = Math.exp(-Math.pow(dRace / L3_CHANNEL_HALFWIDTH, 2)) * raceAmp;
+
+        // The island: a low wooded rise sitting between the two channels,
+        // gated by the same sepT profile that drives the fork itself (so it's
+        // guaranteed to fade to exactly 0 outside the forked reach, never a
+        // separate hard-edged shape) and by an elliptical falloff in x that
+        // shrinks along with the available gap between the channels - it can
+        // never overlap either channel's own carve.
+        const islandAmp = L3_ISLAND_AMP * sepT;
+        const islandHalfX = Math.max(0.5, L3_SEPARATION * sepT - L3_CHANNEL_HALFWIDTH * 2.0 - 3.5);
+        const dIsland = (x - baseX) / islandHalfX;
+        const islandBump = islandAmp * Math.max(0, 1 - dIsland * dIsland);
+
+        // Gentle valley-wall rise, well clear of the river corridor (both
+        // channels plus the island) - kept low per this session's own "get rid
+        // of high embankments" note: caps at ~8m over a long taper, an order of
+        // magnitude gentler than level2's canyon walls, mostly decorative.
+        const corridorHalfExtent = L3_SEPARATION * sepT + L3_CHANNEL_HALFWIDTH * 2.2 + 4;
+        const distFromCorridor = Math.max(0, Math.abs(x - baseX) - corridorHalfExtent);
+        const wallRise = Math.pow(Math.min(1, distFromCorridor / 65), 0.6) * 8;
+
+        const openFloor = floor + wallRise + islandBump;
+        const mainSurface = floor - carveMain;
+        const raceSurface = floor - carveRace;
+        let h = Math.min(openFloor, mainSurface, raceSurface);
+
+        // Fine dirt/detail noise - calmer right at the weir's own sheer-ish
+        // drop (reads as a real small waterfall/millrace lip, not undulating
+        // scree) than the open valley floor.
+        const nearWeir = weirT > 0.3 && dRace < L3_CHANNEL_HALFWIDTH * 1.6 && Math.abs(t - L3_T_WEIR) < 0.03;
+        const detail = n1.fbm(i * 0.05, j * 0.05, 4);
+        h += detail * (nearWeir ? 0.5 : 1.8);
+
+        this.bedrock[idx(i, j)] = h;
+
+        // Hardness: soft, grassy river-valley dirt by default; the rockslide
+        // sill itself (and, more gently, the weir's own lip) read as rubble/
+        // rock; steep ground (see the slope-exposure pass below) hardens too.
+        let hard = 0.1;
+        const sillHardness = sillT * Math.exp(-Math.pow(dRace / (L3_CHANNEL_HALFWIDTH * 1.6), 2));
+        hard = Math.max(hard, sillHardness * 0.82);
+        const weirHardness = THREE.MathUtils.clamp(weirT, 0, 1) * Math.exp(-Math.pow(dRace / (L3_CHANNEL_HALFWIDTH * 1.3), 2));
+        hard = Math.max(hard, weirHardness * 0.5);
+        const outcrop = n2.fbm(i * 0.08, j * 0.08, 3);
+        if (outcrop > 0.48) hard = Math.max(hard, (outcrop - 0.48) * 2.6);
+        this.hardness[idx(i, j)] = Math.min(1, hard);
+      }
+    }
+
+    // Bare rock/rubble wherever the ground is genuinely steep (same slope-
+    // exposure technique as level1/level2's own passes) - excludes both
+    // channel corridors themselves, which should stay soft, diggable riverbed.
+    for (let j = 1; j < GRID - 1; j++) {
+      const z = j * CELL;
+      const t = z / SIZE;
+      const baseX = l3BaseCenterX(z);
+      const sepT = l3SeparationT(t);
+      const mainX = baseX + sepT * L3_SEPARATION;
+      const raceX = baseX - sepT * L3_SEPARATION;
+      const corridorHalf = L3_CHANNEL_HALFWIDTH * 2.4;
+      for (let i = 1; i < GRID - 1; i++) {
+        const x = i * CELL;
+        if (Math.abs(x - mainX) < corridorHalf || Math.abs(x - raceX) < corridorHalf) continue;
+        const k = idx(i, j);
+        const hL = this.bedrock[idx(i - 1, j)], hR = this.bedrock[idx(i + 1, j)];
+        const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];
+        const slope = (Math.abs(hR - hL) + Math.abs(hU - hD)) / (4 * CELL);
+        this.hardness[k] = Math.max(this.hardness[k], Math.min(1, slope * 1.3));
+      }
+    }
+
+    this.height.set(this.bedrock);
+  }
+
   sampleHeightBilinear(x, z) {
     const fx = THREE.MathUtils.clamp(x / CELL, 0, GRID - 1.001);
     const fz = THREE.MathUtils.clamp(z / CELL, 0, GRID - 1.001);
@@ -1164,7 +1370,49 @@ export class Terrain {
   // an actual hole rather than a colour smudge.
   _colorAt(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
     if (ACTIVE_LEVEL === 'level2') this._colorAtLevel2(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
+    else if (ACTIVE_LEVEL === 'level3') this._colorAtLevel3(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
     else this._colorAtLevel1(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
+  }
+
+  // Lush water-meadow palette (greener/softer than level2's bare mountain
+  // dirt-and-rock, matching a working valley around an old mill rather than a
+  // sheer gorge) with rock only where the slope-exposure pass actually hardened
+  // the ground, and the rockslide sill/weir reading as distinct pale rubble.
+  _colorAtLevel3(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
+    const P = this._pal;
+    const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
+
+    const grassWarmth = THREE.MathUtils.clamp((n2.fbm(fx * 0.1 + 700, fz * 0.1 + 700, 3) - 0.1) * 1.5, 0, 1);
+    const grassTone = this._cGrass.copy(P.grass).lerp(P.grassWarm, grassWarmth);
+    const base = this._cBase.copy(P.dirt).lerp(grassTone, 0.6);
+    base.lerp(P.dryGrass, 0.1);
+
+    const mossNoise = n1.fbm(fx * 0.12 + 200, fz * 0.12 + 200, 3);
+    const mossPatch = THREE.MathUtils.clamp((mossNoise - 0.15) * 2.0, 0, 1) * THREE.MathUtils.clamp(1 - slope * 2.0, 0, 1) * (1 - hardness * 0.7);
+    base.lerp(P.moss, mossPatch * 0.5);
+
+    const rockExposure = THREE.MathUtils.clamp(hardness * (0.3 + slope * 1.6), 0, 1);
+    const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, 0.4);
+    rockTone.lerp(P.rockDark, THREE.MathUtils.clamp(wet * 1.2, 0, 1) * 0.4);
+    base.lerp(rockTone, rockExposure);
+    if (rockExposure > 0.15) {
+      const strataPhase = fi * FINE_CELL * 0.9 + h * 1.6;
+      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+      base.lerp(P.rockDark, strata * 0.35 * rockExposure);
+      base.lerp(P.rockLight, (1 - strata) * 0.15 * rockExposure);
+    }
+    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.6);
+
+    const wetT = THREE.MathUtils.clamp(wet, 0, 1);
+    base.lerp(P.mud, wetT * 0.8);
+
+    const distT = THREE.MathUtils.clamp(disturbance, 0, 1);
+    if (cavity > 0) base.lerp(P.turnedSandDug, distT * 0.8);
+    else base.lerp(P.turnedSand, distT * 0.75);
+    if (cavity > 0) base.multiplyScalar(1 - Math.min(1, cavity) * 0.5);
+    else base.multiplyScalar(1 - cavity * 0.24);
+
+    out.copy(base);
   }
 
   // Dirt/rock palette (no sand or coastal turf) with mossy patches on gentler,

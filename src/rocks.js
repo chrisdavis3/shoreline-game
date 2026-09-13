@@ -1,6 +1,9 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=103';
-import { Noise2D } from './noise.js?v=103';
+import {
+  GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1,
+  l3MainChannelX, l3RaceChannelX, L3_CHANNEL_HALFWIDTH,
+} from './terrain.js?v=104';
+import { Noise2D } from './noise.js?v=104';
 
 const rn = new Noise2D(777);
 
@@ -117,8 +120,16 @@ export function scatterRocks(terrain, scene, count = 46) {
       ? Math.random() * (SIZE - L2_T_FALL1 * SIZE - SIZE * 0.02) + L2_T_FALL1 * SIZE + SIZE * 0.02
       : Math.random() * SIZE * 0.72 + SIZE * 0.03;
     const t = z / SIZE;
-    const cx = streamCenterX(z);
-    const distToStream = Math.abs(x - cx);
+
+    // Level 3 has two channels (main fork + mill race), not one - avoidance/
+    // bias below needs the nearer of the two rather than the single generic
+    // streamCenterX (which, for level3, only resolves to the shared upstream
+    // centreline - see terrain.js's streamCenterX dispatch - not either real
+    // fork once they've actually split).
+    const isLevel3 = getActiveLevel() === 'level3';
+    const distToStream = isLevel3
+      ? Math.min(Math.abs(x - l3MainChannelX(z)), Math.abs(x - l3RaceChannelX(z)))
+      : Math.abs(x - streamCenterX(z));
 
     // bias placement: some rocks sit right in/near the stream (great for splitting flow),
     // others scattered across dunes and the beach.
@@ -134,7 +145,7 @@ export function scatterRocks(terrain, scene, count = 46) {
     // metres; the carve `width` parameter is in CELLS, easy to mix up) plus their own
     // footprint radius, or a rock can fully dam a channel this narrow with no bypass.
     if (size !== 'small') {
-      const channelHalfWidthM = (2.4 + 2.4 * t) * 0.82 * 1.6;
+      const channelHalfWidthM = isLevel3 ? L3_CHANNEL_HALFWIDTH * 1.6 : (2.4 + 2.4 * t) * 0.82 * 1.6;
       const footprint = size === 'large' ? 1.6 : 1.0;
       if (distToStream < channelHalfWidthM + footprint) continue;
     }

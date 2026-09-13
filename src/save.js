@@ -4,7 +4,7 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
-import { TERRAIN_VERSION } from './terrain.js?v=103';
+import { TERRAIN_VERSION } from './terrain.js?v=104';
 
 // Each level gets its own independent save slot, keyed by level id, so
 // progress in one never overwrites or gets clobbered by the other. Level 1's
@@ -14,6 +14,7 @@ import { TERRAIN_VERSION } from './terrain.js?v=103';
 const KEY_BY_LEVEL = {
   level1: 'shoreline_save_v1',
   level2: 'shoreline_save_level2_v1',
+  level3: 'shoreline_save_level3_v1',
 };
 function keyFor(levelId) { return KEY_BY_LEVEL[levelId] || KEY_BY_LEVEL.level1; }
 const SCHEMA_VERSION = 1;

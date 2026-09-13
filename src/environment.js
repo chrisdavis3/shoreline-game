@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=103';
-import { Noise2D } from './noise.js?v=103';
+  l3BaseCenterX, l3MainChannelX, l3RaceChannelX, L3_CHANNEL_HALFWIDTH,
+} from './terrain.js?v=104';
+import { Noise2D } from './noise.js?v=104';
 
 const decoNoise = new Noise2D(555);
 
@@ -1167,4 +1168,271 @@ export function buildWaterfallCascade(terrain) {
   mesh.renderOrder = 2;
   mesh.frustumCulled = false;
   return { mesh, height, update(t) { mat.uniforms.uTime.value = t; } };
+}
+
+// ---------------------------------------------------------------------------
+// The secret route into level 3: a cave mouth tucked beside (not directly
+// behind - that's the sheer rock the falls actually run down) level 2's own
+// waterfall landing pool. Deliberately easy to miss - a rough arch of
+// overlapping boulders around a dark opening, the same low-poly "sea-arch"
+// technique scatterProps uses for level 1's headland, sitting right at the
+// pool's edge rather than announced by anything else. Mirrors buildVillage's
+// door-info return shape ({ group, door: {x,z,standX,standZ,facing} }), since
+// main.js's proximity-prompt pattern (see updateDoorUI) is written generically
+// against that shape already.
+export function buildCaveEntranceLevel2(terrain) {
+  const group = new THREE.Group();
+  const poolCenterX = L2_LIP_X, poolCenterZ = L2_T_FALL1 * SIZE;
+  const caveX = poolCenterX + 9.5;
+  const caveZ = poolCenterZ - 2.0;
+  const y = terrain.sampleHeightBilinear(caveX, caveZ);
+
+  const rockMat = new THREE.MeshStandardMaterial({ color: '#3c3f42', roughness: 0.95, flatShading: true });
+  const voidMat = new THREE.MeshStandardMaterial({ color: '#050506', roughness: 1.0 });
+  const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+  const boulders = [
+    [-1.5, 0, 0, 1.4, 2.4, 1.3],
+    [1.5, 0.1, -0.1, 1.5, 2.6, 1.4],
+    [0, 2.1, 0.05, 2.1, 1.0, 1.5],
+    [-0.6, -0.3, 0.9, 1.1, 1.3, 1.2],
+  ];
+  for (const [dx, dy, dz, sx, sy, sz] of boulders) {
+    const rock = new THREE.Mesh(rockGeo, rockMat);
+    rock.position.set(caveX + dx, y + dy, caveZ + dz);
+    rock.scale.set(sx, sy, sz);
+    rock.rotation.set(Math.random() * 0.4, Math.random() * Math.PI, Math.random() * 0.3);
+    rock.castShadow = true;
+    rock.receiveShadow = true;
+    group.add(rock);
+  }
+  const voidPlane = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.4), voidMat);
+  voidPlane.position.set(caveX, y + 1.2, caveZ + 0.15);
+  group.add(voidPlane);
+
+  // Faces back toward the pool - that's the direction a player would actually
+  // approach from, and where the interaction "stand point" needs to sit.
+  const facing = Math.atan2(poolCenterX - caveX, poolCenterZ - caveZ);
+  const standX = caveX + Math.sin(facing) * 2.0;
+  const standZ = caveZ + Math.cos(facing) * 2.0;
+  return { group, door: { x: caveX, z: caveZ, standX, standZ, facing } };
+}
+
+// ---------------------------------------------------------------------------
+// Level 3 ("Millwright's Fork") decoration - a lusher, greener water-meadow
+// valley (moss/grass/dirt, not level2's bare mountain rock) around the forked
+// river and its small wooded island. Mirrors buildSkirtLevel2/
+// scatterPropsLevel2's structure closely (same rectangular, coastline-free
+// footprint - see terrain.js's insetCells level3 branch) with a softer palette
+// and broadleaf-style trees instead of level2's conifers.
+export function buildSkirtLevel3(terrain) {
+  const span = SIZE * 5;
+  const halfSpan = span / 2;
+  const coreStep = 1.8;
+  const growth = 1.4;
+  const xs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.1, SIZE * 1.1, coreStep, growth);
+  const zs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.1, SIZE * 1.1, coreStep, growth);
+  const nx = xs.length, nz = zs.length;
+
+  const positions = new Float32Array(nx * nz * 3);
+  const colors = new Float32Array(nx * nz * 3);
+  const uvs = new Float32Array(nx * nz * 2);
+
+  const rockMid = new THREE.Color('#3c3f42');
+  const rockLight = new THREE.Color('#8b8d87');
+  const grass = new THREE.Color('#5f7a45');
+  const grassWarm = new THREE.Color('#96a04c');
+  const farHaze = new THREE.Color('#7f9296');
+  const tmpC = new THREE.Color();
+  const tmpGrass = new THREE.Color();
+
+  for (let jz = 0; jz < nz; jz++) {
+    const z = zs[jz];
+    for (let ix = 0; ix < nx; ix++) {
+      const x = xs[ix];
+      const k = jz * nx + ix;
+      const outside = Math.max(0, -x, x - SIZE, -z, z - SIZE);
+      let y;
+      if (outside <= 0) {
+        y = -60;
+      } else {
+        // Kept low well past the boundary (river valley, not a mountain gorge -
+        // see level2's own note on this same pattern) so it reads as gently
+        // rolling water-meadow country rather than looming hills.
+        const nearRise = Math.pow(Math.min(1, outside / 90), 0.55);
+        const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.6)), 0.75);
+        const rise = nearRise * 0.55 + farRise * 0.5;
+        const warpX_ = x + decoNoise.fbm(x * 0.008 + 1000, z * 0.008 + 1000, 3) * 55;
+        const warpZ_ = z + decoNoise.fbm(x * 0.008 + 3000, z * 0.008 + 3000, 3) * 55;
+        const n = decoNoise.fbm(warpX_ * 0.012, warpZ_ * 0.012, 4);
+        const bigRock = decoNoise.ridged(warpX_ * 0.02 + 500, warpZ_ * 0.02 + 500, 4) - 0.5;
+        const fineRock = decoNoise.ridged(warpX_ * 0.09 + 900, warpZ_ * 0.09 + 900, 3) - 0.5;
+        const edgeY = terrain.sampleHeightBilinear(
+          THREE.MathUtils.clamp(x, 1, SIZE - 1),
+          THREE.MathUtils.clamp(z, 1, SIZE - 1),
+        );
+        y = edgeY + rise * (26 + n * 12) + bigRock * 14 * nearRise + fineRock * 5 * nearRise;
+      }
+      positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
+      uvs[k * 2] = ix / (nx - 1); uvs[k * 2 + 1] = jz / (nz - 1);
+
+      const distT = THREE.MathUtils.clamp((outside - 60) / (SIZE * 2.2), 0, 1);
+      const heightT = THREE.MathUtils.clamp(y / 55, 0, 1);
+      tmpC.copy(rockMid).lerp(rockLight, heightT * 0.6);
+      // Grass-covered by default (a soft water-meadow hillside), rock only
+      // where noise/height pushes through - the opposite bias from level2's
+      // bare-mountain surround.
+      const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
+      const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
+      tmpGrass.copy(grass).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
+      tmpC.lerp(tmpGrass, 0.72);
+      const grassAmount = THREE.MathUtils.clamp((grassPatchNoise + 0.3) * 1.2, 0, 1);
+      tmpC.lerp(tmpGrass, grassAmount * 0.2);
+      tmpC.lerp(farHaze, distT * distT * 0.6);
+      colors[k * 3] = tmpC.r; colors[k * 3 + 1] = tmpC.g; colors[k * 3 + 2] = tmpC.b;
+    }
+  }
+
+  const indices = [];
+  for (let jz = 0; jz < nz - 1; jz++) {
+    for (let ix = 0; ix < nx - 1; ix++) {
+      const a = jz * nx + ix, b = jz * nx + ix + 1;
+      const c = (jz + 1) * nx + ix, d = (jz + 1) * nx + ix + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = false;
+  mesh.renderOrder = -1;
+  return mesh;
+}
+
+// Broadleaf-ish trees (trunk + a cluster of round canopy blobs, distinct from
+// level2's conifers), reeds/tall grass along both channel banks and the
+// island, and scattered mossy stones - the water-meadow equivalent of level1/
+// level2's own scatterProps.
+export function scatterPropsLevel3(terrain) {
+  const group = new THREE.Group();
+  const dummy = new THREE.Object3D();
+  const tmpCol = new THREE.Color();
+
+  // Distance to the nearer of the two real channels, for avoidance/biasing -
+  // same technique rocks.js's level3 branch uses.
+  function distToChannel(x, z) {
+    return Math.min(Math.abs(x - l3MainChannelX(z)), Math.abs(x - l3RaceChannelX(z)));
+  }
+
+  const trunkGeo = new THREE.CylinderGeometry(0.1, 0.15, 1.3, 6);
+  trunkGeo.translate(0, 0.65, 0);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: '#4a3626', roughness: 0.9, flatShading: true });
+  const canopyGeo = new THREE.IcosahedronGeometry(1, 0);
+  const canopyMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.88, flatShading: true });
+  const canopyTones = ['#4c6b34', '#5c7a3f', '#3e5a2c', '#6b8548'].map((c) => new THREE.Color(c));
+
+  const TREE_COUNT = 700;
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, TREE_COUNT);
+  const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, TREE_COUNT);
+  trunks.castShadow = true; canopies.castShadow = true; canopies.receiveShadow = true;
+  let tc = 0;
+  for (let n = 0; n < TREE_COUNT * 3 && tc < TREE_COUNT; n++) {
+    const x = Math.random() * SIZE, z = Math.random() * SIZE;
+    if (distToChannel(x, z) < L3_CHANNEL_HALFWIDTH * 2.4) continue; // keep the banks themselves open/walkable
+    const y = terrain.sampleHeightBilinear(x, z);
+    const eps = 0.7;
+    const hx1 = terrain.sampleHeightBilinear(x + eps, z), hx0 = terrain.sampleHeightBilinear(x - eps, z);
+    const hz1 = terrain.sampleHeightBilinear(x, z + eps), hz0 = terrain.sampleHeightBilinear(x, z - eps);
+    const slope = (Math.abs(hx1 - hx0) + Math.abs(hz1 - hz0)) / (4 * eps);
+    if (slope > 0.75) continue;
+    const density = decoNoise.fbm(x * 0.05 + 20, z * 0.05 + 20, 3);
+    if (density < 0.1) continue;
+    const scale = 0.75 + Math.random() * 0.85;
+    dummy.position.set(warpX(x, z), y, z);
+    dummy.rotation.set(0, Math.random() * Math.PI, 0);
+    dummy.scale.setScalar(scale);
+    dummy.updateMatrix();
+    trunks.setMatrixAt(tc, dummy.matrix);
+    dummy.position.y += 1.3 + scale * 0.3;
+    dummy.scale.multiplyScalar(1.05);
+    dummy.updateMatrix();
+    canopies.setMatrixAt(tc, dummy.matrix);
+    canopies.setColorAt(tc, tmpCol.copy(canopyTones[Math.floor(Math.random() * canopyTones.length)]).multiplyScalar(0.85 + Math.random() * 0.3));
+    tc++;
+  }
+  trunks.count = tc; canopies.count = tc;
+  group.add(trunks); group.add(canopies);
+
+  // Reeds/tall grass right along both banks - a real water-meadow's most
+  // obvious cue, and a natural way to make the two channels (and the island
+  // between them) read as distinct from the open valley floor beyond.
+  const reedGeo = new THREE.ConeGeometry(0.03, 0.6, 3, 1, true);
+  reedGeo.translate(0, 0.3, 0);
+  const reedMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9, flatShading: true, side: THREE.DoubleSide });
+  const reedCool = new THREE.Color('#5c7a45');
+  const reedWarm = new THREE.Color('#9aa250');
+  const REED_COUNT = 2600;
+  const reeds = new THREE.InstancedMesh(reedGeo, reedMat, REED_COUNT);
+  reeds.castShadow = false;
+  let rc = 0;
+  for (let n = 0; n < REED_COUNT * 2.4 && rc < REED_COUNT; n++) {
+    const z = Math.random() * SIZE;
+    // Pick a random point near (not on) one of the two channels this row.
+    const side = Math.random() < 0.5 ? l3MainChannelX(z) : l3RaceChannelX(z);
+    const bankOffset = (L3_CHANNEL_HALFWIDTH + 0.6) + Math.random() * 2.4;
+    const x = side + (Math.random() < 0.5 ? -1 : 1) * bankOffset;
+    if (x < 1 || x > SIZE - 1) continue;
+    const density = decoNoise.fbm(x * 0.15 + 60, z * 0.15 + 60, 2) * 0.5 + 0.5;
+    if (density < 0.35) continue;
+    const clumpSize = 2 + Math.floor(Math.random() * 3);
+    for (let c = 0; c < clumpSize && rc < REED_COUNT; c++) {
+      const rx = x + (Math.random() - 0.5) * 0.5, rz = z + (Math.random() - 0.5) * 0.5;
+      const y = terrain.sampleHeightBilinear(rx, rz);
+      dummy.position.set(warpX(rx, rz), y, rz);
+      dummy.rotation.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI, (Math.random() - 0.5) * 0.4);
+      const sY = 0.7 + Math.random() * 0.7, sXZ = 0.7 + Math.random() * 0.6;
+      dummy.scale.set(sXZ, sY, sXZ);
+      dummy.updateMatrix();
+      reeds.setMatrixAt(rc, dummy.matrix);
+      tmpCol.copy(reedCool).lerp(reedWarm, Math.random() * 0.5).multiplyScalar(0.85 + Math.random() * 0.3);
+      reeds.setColorAt(rc, tmpCol);
+      rc++;
+    }
+  }
+  reeds.count = rc;
+  group.add(reeds);
+
+  // Mossy stones scattered across the open valley floor.
+  const stoneGeo = new THREE.DodecahedronGeometry(1, 0);
+  const stoneMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, flatShading: true });
+  const stoneTones = ['#5c5a54', '#464540', '#6b6862', '#4c5c40'].map((c) => new THREE.Color(c));
+  const STONE_COUNT = 380;
+  const stones = new THREE.InstancedMesh(stoneGeo, stoneMat, STONE_COUNT);
+  stones.castShadow = true; stones.receiveShadow = true;
+  let sc = 0;
+  for (let n = 0; n < STONE_COUNT * 3 && sc < STONE_COUNT; n++) {
+    const x = Math.random() * SIZE, z = Math.random() * SIZE;
+    if (distToChannel(x, z) < L3_CHANNEL_HALFWIDTH * 1.5) continue;
+    const density = decoNoise.fbm(x * 0.08 + 55, z * 0.08 + 55, 3);
+    if (density < 0.12) continue;
+    const y = terrain.sampleHeightBilinear(x, z);
+    const scale = 0.1 + Math.random() * 0.2;
+    dummy.position.set(warpX(x, z), y + scale * 0.3, z);
+    dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    dummy.scale.set(scale, scale * 0.75, scale);
+    dummy.updateMatrix();
+    stones.setMatrixAt(sc, dummy.matrix);
+    stones.setColorAt(sc, tmpCol.copy(stoneTones[Math.floor(Math.random() * stoneTones.length)]));
+    sc++;
+  }
+  stones.count = sc;
+  group.add(stones);
+
+  return group;
 }

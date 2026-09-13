@@ -3,7 +3,8 @@ import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=103';
+  l3BaseCenterX, l3MainChannelX, l3RaceChannelX, L3_CHANNEL_HALFWIDTH,
+} from './terrain.js?v=104';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -82,6 +83,17 @@ export class WaterSim {
       this._sourceRate = 1.1; // a real waterfall's volume reads as much more than a gentle spring trickle
     }
 
+    // Level 3 ("Millwright's Fork"): a real (if modest) river, not a spring or
+    // a waterfall - reuses the same tide-relaxation machinery as a flat,
+    // non-oscillating "the river keeps flowing off-map downstream" sink (see
+    // terrain.js's coastTContinuousLevel3) rather than a sea or a still lake.
+    if (getActiveLevel() === 'level3') {
+      this.tideLevel = 0.32;
+      this.tideRange = 0;
+      this.tidePeriod = 1;
+      this._sourceRate = 0.55;
+    }
+
     // Per-column coastline threshold, precomputed once - every functional sea-zone
     // check below reads this instead of recomputing the noise or using a flat cutoff.
     this._coastT = new Float32Array(N);
@@ -98,6 +110,22 @@ export class WaterSim {
   }
 
   _seedSource() {
+    if (getActiveLevel() === 'level3') {
+      // A single upstream channel, off-map, exactly like level1's spring - it
+      // only splits into the two forks once the terrain itself actually forks
+      // (see l3SeparationT in terrain.js); at j=0..3 the two channel functions
+      // are still identical, so this reads as one ordinary river source.
+      this.sourceCells = [];
+      for (let j = 0; j < 4; j++) {
+        const z = j * CELL;
+        const ci = Math.round(l3BaseCenterX(z) / CELL);
+        for (let di = -1; di <= 1; di++) {
+          const i = ci + di;
+          if (i >= 0 && i < N) this.sourceCells.push(idx(i, j));
+        }
+      }
+      return;
+    }
     if (getActiveLevel() === 'level2') {
       // Feeds the lake basin above the falls (see terrain.js's L2_LAKE_*),
       // not the falls' lip directly any more - the lake fills from its own
@@ -132,6 +160,44 @@ export class WaterSim {
   // reads as continuous from the very first frame rather than needing the sim to
   // build it up from zero through a single fragile point source.
   _seedChannel(terrain) {
+    if (getActiveLevel() === 'level3') {
+      // Two independent seep profiles, one per fork - each is exactly the same
+      // technique as level1's single profile below, just walked along its own
+      // channel centreline (l3MainChannelX/l3RaceChannelX, which coincide
+      // upstream of the fork and downstream of the rejoin - see terrain.js).
+      // Kept as a SEPARATE profile/loop pair (this._seepProfileRace, handled in
+      // its own block in _step) rather than folding into the shared
+      // this._seepProfile/this._seepRows fields, so level1/level2's own
+      // single-profile code below stays byte-identical.
+      this._seepProfile = [];
+      this._seepProfileRace = [];
+      for (let j = 0; j < N; j++) {
+        const z = j * CELL;
+        const t = z / SIZE;
+        const channelCoastT = this._coastT[Math.round(THREE.MathUtils.clamp(l3BaseCenterX(z) / CELL, 0, N - 1))];
+        if (t > channelCoastT) break;
+        const width = L3_CHANNEL_HALFWIDTH;
+        for (const [profile, centerFn] of [[this._seepProfile, l3MainChannelX], [this._seepProfileRace, l3RaceChannelX]]) {
+          const ci = centerFn(z) / CELL;
+          const i0 = Math.max(0, Math.floor(ci - width * 1.6));
+          const i1 = Math.min(N - 1, Math.ceil(ci + width * 1.6));
+          const row = [];
+          for (let i = i0; i <= i1; i++) {
+            const k = idx(i, j);
+            if (terrain.blocked[k]) continue;
+            const d = Math.abs(i - ci);
+            const falloff = Math.exp(-Math.pow(d / width, 2));
+            const target = 0.1 * falloff;
+            row.push({ k, target });
+            this.depth[k] = Math.max(this.depth[k], target);
+          }
+          profile.push(row);
+        }
+      }
+      this._seepRows = this._seepProfile.length;
+      this._seepRowsRace = this._seepProfileRace.length;
+      return;
+    }
     this._seepProfile = [];
     // Level 2's diggable seep channel only starts BELOW the landing pool - the
     // falls' own near-vertical face isn't a channel, it's fed purely by the
@@ -626,6 +692,34 @@ export class WaterSim {
         if (h[k] - terrain.bedrock[k] > 0.6) continue;
         const deficit = target - depth[k];
         if (deficit > 0) depth[k] += deficit * Math.min(1, 0.35 * dt);
+      }
+    }
+
+    // Level 3's second fork (the mill race) - the exact same seepage/dam-
+    // detection logic as the block above, just walked along its own profile,
+    // so digging out the rockslide (or damming the race instead) behaves the
+    // same way level1/level2's single channel already does. A no-op for every
+    // other level (this._seepProfileRace is only ever set in _seedChannel's
+    // level3 branch).
+    if (this._seepProfileRace) {
+      let raceDamBlocked = false;
+      for (let j = 0; j < this._seepRowsRace; j++) {
+        const row = this._seepProfileRace[j];
+        if (!raceDamBlocked && row.length > 0) {
+          raceDamBlocked = true;
+          for (let n = 0; n < row.length; n++) {
+            const { k } = row[n];
+            if (h[k] - terrain.bedrock[k] <= 0.6) { raceDamBlocked = false; break; }
+          }
+        }
+        if (raceDamBlocked) continue;
+        for (let n = 0; n < row.length; n++) {
+          const { k, target } = row[n];
+          if (blocked[k]) continue;
+          if (h[k] - terrain.bedrock[k] > 0.6) continue;
+          const deficit = target - depth[k];
+          if (deficit > 0) depth[k] += deficit * Math.min(1, 0.35 * dt);
+        }
       }
     }
 

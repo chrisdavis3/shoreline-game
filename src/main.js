@@ -2,19 +2,21 @@ import * as THREE from 'three';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=103';
-import { WaterSim } from './water.js?v=103';
+  l3MainChannelX, l3RaceChannelX, L3_CHANNEL_HALFWIDTH,
+} from './terrain.js?v=104';
+import { WaterSim } from './water.js?v=104';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=103';
-import { scatterRocks, Rock } from './rocks.js?v=103';
-import { Player } from './player.js?v=103';
-import { AudioSystem } from './audio.js?v=103';
-import { Particles } from './particles.js?v=103';
-import { Debris } from './debris.js?v=103';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=103';
-import { Bulldozer, Excavator } from './vehicles.js?v=103';
+  buildCaveEntranceLevel2, buildSkirtLevel3, scatterPropsLevel3,
+} from './environment.js?v=104';
+import { scatterRocks, Rock } from './rocks.js?v=104';
+import { Player } from './player.js?v=104';
+import { AudioSystem } from './audio.js?v=104';
+import { Particles } from './particles.js?v=104';
+import { Debris } from './debris.js?v=104';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=104';
+import { Bulldozer, Excavator } from './vehicles.js?v=104';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,7 +36,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 103;
+const APP_VERSION = 104;
 
 // ---------- renderer / scene / camera ----------
 
@@ -126,12 +128,15 @@ scene.add(water.mesh);
 const sky = buildSky(scene);
 // Level 2 has no sea - the water sim's own mesh already covers its still lake
 // (see terrain.js's coastT/L2_LAKE_T0) - so skip the distant-ocean backdrop
-// plane and add the waterfall's own decorative cascade instead.
+// plane and add the waterfall's own decorative cascade instead. Level 3 has
+// neither a sea nor (yet) its own waterfall cascade mesh - the mill weir's
+// drop is real (simulated) but modest; a decorative cascade there is a later
+// pass, not part of this level's first landing.
 let ocean = null, cascade = null;
 if (ACTIVE_LEVEL_ID === 'level2') {
   cascade = buildWaterfallCascade(terrain);
   scene.add(cascade.mesh);
-} else {
+} else if (ACTIVE_LEVEL_ID === 'level1') {
   ocean = buildOcean(water.uniforms);
   scene.add(ocean.mesh);
 }
@@ -157,12 +162,12 @@ const rocks = savedData && Array.isArray(savedData.rocks)
 // Hard guarantee, independent of the placement odds above: the stream must never be
 // fully dammed. Walk every row and if every cell across the channel's width ended up
 // blocked, forcibly clear the one closest to the centreline so there's always a gap.
-{
+function unblockChannel(centerFn, halfWidthFn) {
   let unblocked = 0;
   for (let j = 0; j < GRID; j++) {
     const z = j * CELL;
-    const ci = streamCenterX(z) / CELL;
-    const halfWidthCells = (2.4 + 2.4 * (z / SIZE)) * 1.6;
+    const ci = centerFn(z) / CELL;
+    const halfWidthCells = halfWidthFn(z) / CELL;
     const i0 = Math.max(0, Math.floor(ci - halfWidthCells));
     const i1 = Math.min(GRID - 1, Math.ceil(ci + halfWidthCells));
     let allBlocked = true;
@@ -177,6 +182,19 @@ const rocks = savedData && Array.isArray(savedData.rocks)
       unblocked++;
     }
   }
+  return unblocked;
+}
+{
+  let unblocked;
+  if (ACTIVE_LEVEL_ID === 'level3') {
+    // Two real channels here (main fork + mill race) - each gets its own
+    // never-fully-dammed guarantee, using the real per-channel width rather
+    // than level1/level2's single-stream formula.
+    const halfW = () => L3_CHANNEL_HALFWIDTH * 1.6; // already metres - see terrain.js's L3_CHANNEL_HALFWIDTH
+    unblocked = unblockChannel(l3MainChannelX, halfW) + unblockChannel(l3RaceChannelX, halfW);
+  } else {
+    unblocked = unblockChannel(streamCenterX, (z) => (2.4 + 2.4 * (z / SIZE)) * 1.6 * CELL);
+  }
   if (unblocked > 0) console.warn(`[shoreline] cleared ${unblocked} channel-blocking cell(s) to guarantee the stream stays open`);
 }
 
@@ -184,6 +202,7 @@ const player = new Player(terrain);
 scene.add(player.mesh);
 if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
 else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(SIZE * 0.5, SIZE * 0.30); // just below the falls' landing pool
+else if (ACTIVE_LEVEL_ID === 'level3') player.setSpawn(l3MainChannelX(SIZE * 0.12) + 9, SIZE * 0.12); // upstream end, before the fork
 else player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
 
 const particles = new Particles(scene, 320);
@@ -226,9 +245,16 @@ if (savedData) {
 // were pinned to the PRE-erosion height, then the ground moved out from
 // under them during priming - "grass floating in the air" by the river.
 let villageDoor = null;
+let caveDoor = null; // level2's own secret route into level3 (see buildCaveEntranceLevel2)
 if (ACTIVE_LEVEL_ID === 'level2') {
   scene.add(buildSkirtLevel2(terrain));
   scene.add(scatterPropsLevel2(terrain));
+  const cave = buildCaveEntranceLevel2(terrain);
+  scene.add(cave.group);
+  caveDoor = cave.door;
+} else if (ACTIVE_LEVEL_ID === 'level3') {
+  scene.add(buildSkirtLevel3(terrain));
+  scene.add(scatterPropsLevel3(terrain));
 } else {
   scene.add(buildSkirt(terrain));
   const village = buildVillage(terrain);
@@ -266,20 +292,28 @@ function placeVehicles(terrainRef) {
   // Level 2's working stretch runs from the landing pool (t~0.20) down to the
   // lake (t~0.90) - centred well inside that, clear of both the waterfall
   // spray and the lake shore, spanning most of the valley's own width so the
-  // search has real room to find flat ground beside the river. The valley
+  // search has real room to find flat ground beside the river. Level 3's
+  // search instead centres on the rockslide sill (the actual dig target) so
+  // the player doesn't have to go looking for the vehicles first. The valley
   // floor itself is a steady slope (not flat like level 1's village), so
   // rather than reject candidates against a fixed flatness threshold - which
   // can end up with nothing qualifying at all - score every candidate and
   // keep the flattest one seen.
-  const zLo = SIZE * 0.30, zHi = SIZE * 0.55;
-  const xLo = SIZE * 0.20, xHi = SIZE * 0.80;
+  const isLevel3 = ACTIVE_LEVEL_ID === 'level3';
+  const zLo = isLevel3 ? SIZE * 0.34 : SIZE * 0.30;
+  const zHi = isLevel3 ? SIZE * 0.52 : SIZE * 0.55;
+  const xLo = isLevel3 ? SIZE * 0.15 : SIZE * 0.20;
+  const xHi = isLevel3 ? SIZE * 0.85 : SIZE * 0.80;
+  const clearOf = (cx, cz) => isLevel3
+    ? Math.min(Math.abs(cx - l3MainChannelX(cz)), Math.abs(cx - l3RaceChannelX(cz))) < (L3_CHANNEL_HALFWIDTH * 1.7 + 3)
+    : Math.abs(cx - streamCenterX(cz)) < 14;
   const chosen = [];
   for (const spec of specs) {
     let best = null;
     for (let attempt = 0; attempt < 120; attempt++) {
       const cx = xLo + Math.random() * (xHi - xLo);
       const cz = zLo + Math.random() * (zHi - zLo);
-      if (Math.abs(cx - streamCenterX(cz)) < 14) continue; // stay well clear of the stream/river corridor
+      if (clearOf(cx, cz)) continue; // stay well clear of the stream/river corridor
       if (terrainRef.blocked[idx(Math.round(cx / CELL), Math.round(cz / CELL))]) continue;
       let tooClose = false;
       for (const p of chosen) { if (Math.hypot(p.x - cx, p.z - cz) < 6) { tooClose = true; break; } }
@@ -298,9 +332,10 @@ function placeVehicles(terrainRef) {
   return specs.map((spec, i) => createVehicle(spec.type, chosen[i].x, chosen[i].z, spec.heading, terrainRef));
 }
 
-// Construction equipment only belongs in the gorge (level 2) - a hand-shovel
-// coastal sandbox has no business with a bulldozer parked on the beach.
-const vehicles = ACTIVE_LEVEL_ID !== 'level2' ? [] : (
+// Construction equipment only belongs in the gorge (level 2) and the mill
+// valley downstream of it (level 3) - a hand-shovel coastal sandbox has no
+// business with a bulldozer parked on the beach.
+const vehicles = (ACTIVE_LEVEL_ID !== 'level2' && ACTIVE_LEVEL_ID !== 'level3') ? [] : (
   savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
     ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
     : placeVehicles(terrain)
@@ -1042,7 +1077,19 @@ const hints = {
   queue: [],
   current: null,
   timer: 0,
-  messages: ACTIVE_LEVEL_ID === 'level2' ? {
+  messages: ACTIVE_LEVEL_ID === 'level3' ? {
+    intro: 'A river forks around a small island. The mill race, on the left, is choked with rockslide debris - clear it (or push rocks to help) to send more flow back to the old water wheel.',
+    dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
+    pickUp: 'Carry it to the water. E to set it down.',
+    putDown: null,
+    pushRock: null,
+    tideRise: null,
+    nearVehicle: 'A bulldozer and an excavator, parked nearby. Walk up and press E to hop in.',
+    enterVehicle: 'W/S drive, A/D turn. The excavator also has Z/X to rotate its cab, and click to dig.',
+    bulldoze: null,
+    excavatorDig: null,
+    wheelTurning: 'The water wheel is turning faster. Keep it up.',
+  } : ACTIVE_LEVEL_ID === 'level2' ? {
     intro: 'A shovel. A waterfall feeding a river through the gorge. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
     dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
     pickUp: 'Carry it to the water. E to set it down.',
@@ -1090,15 +1137,16 @@ setTimeout(() => hints.trigger('intro'), 1400);
 const tideMarker = document.getElementById('tideMarker');
 const tideLabel = document.getElementById('tideLabel');
 let lastTideHeight = water.tideHeight(0);
-// Level 2 is a still mountain lake, not a tidal sea (see water.js's own
-// tideRange=0 for level 2) - the tide readout has nothing to show there.
-if (ACTIVE_LEVEL_ID === 'level2') {
+// Level 2 is a still mountain lake, and level 3 a flowing river with a fixed
+// downstream sink - neither is a tidal sea (see water.js's own tideRange=0 for
+// both) - the tide readout has nothing to show there.
+if (ACTIVE_LEVEL_ID === 'level2' || ACTIVE_LEVEL_ID === 'level3') {
   const tideWrap = document.getElementById('tideWrap');
   if (tideWrap) tideWrap.style.display = 'none';
 }
 
 function updateTideUI() {
-  if (ACTIVE_LEVEL_ID === 'level2') return;
+  if (ACTIVE_LEVEL_ID === 'level2' || ACTIVE_LEVEL_ID === 'level3') return;
   const h = water.tideHeight(water.elapsed);
   const norm = THREE.MathUtils.clamp((h - (water.tideLevel - water.tideRange / 2)) / water.tideRange, 0, 1);
   tideMarker.style.left = `${norm * 100}%`;
@@ -1196,6 +1244,52 @@ if (doorPopupEl) {
   }
 }
 
+// ---------- cave door (level 2's own secret route into level 3) ----------
+// A second, separately-styled popup (see index.html/artifact.html's
+// #caveSelect) rather than hijacking #levelSelect, which the village door
+// above already claims - same proximity-prompt pattern (see
+// buildCaveEntranceLevel2's door-info shape and nearVillageDoor/updateDoorUI
+// just above), just gated to level 2 and targeting level3 instead.
+const caveDoorPopupEl = document.getElementById('caveSelect');
+let caveDoorPopupShown = false;
+let caveDoorDismissed = false;
+
+function nearCaveDoor() {
+  if (!caveDoor || ACTIVE_LEVEL_ID !== 'level2') return false;
+  const dx = caveDoor.standX - player.pos.x, dz = caveDoor.standZ - player.pos.z;
+  return Math.hypot(dx, dz) < DOOR_RANGE;
+}
+
+function updateCaveDoorUI() {
+  if (!caveDoor || ACTIVE_LEVEL_ID !== 'level2' || drivingVehicle) return;
+  const near = nearCaveDoor();
+  if (near && !caveDoorPopupShown && !caveDoorDismissed) {
+    caveDoorPopupShown = true;
+    if (caveDoorPopupEl) caveDoorPopupEl.style.display = 'flex';
+  } else if (!near) {
+    caveDoorDismissed = false;
+  }
+}
+
+if (caveDoorPopupEl) {
+  const millCard = document.getElementById('millCard');
+  const dismissBtn = document.getElementById('csDismiss');
+  if (millCard) {
+    millCard.addEventListener('click', () => {
+      saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID });
+      localStorage.setItem('shoreline_active_level', 'level3');
+      location.reload();
+    });
+  }
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => {
+      caveDoorPopupEl.style.display = 'none';
+      caveDoorPopupShown = false;
+      caveDoorDismissed = true;
+    });
+  }
+}
+
 // ---------- sound toggle ----------
 
 const soundBtn = document.getElementById('sound');
@@ -1229,7 +1323,8 @@ window.addEventListener('pagehide', doSave);
 
 const resetBtn = document.getElementById('resetBtn');
 if (resetBtn) {
-  const resetLabel = ACTIVE_LEVEL_ID === 'level2' ? 'Reset gorge' : 'Reset beach';
+  const resetLabel = ACTIVE_LEVEL_ID === 'level2' ? 'Reset gorge'
+    : ACTIVE_LEVEL_ID === 'level3' ? 'Reset the fork' : 'Reset beach';
   resetBtn.textContent = resetLabel;
   resetBtn.addEventListener('click', () => {
     const sure = window.confirm('Reset this level back to its natural state? Everything you\'ve dug, piled, or moved will be lost - this can\'t be undone.');
@@ -1247,16 +1342,21 @@ if (resetBtn) {
 const levelBtn = document.getElementById('levelBtn');
 if (levelBtn) {
   // Level 1 has no "change level" destination any more - the door is the only
-  // way there. Only level 2 (reached through it) needs a way back.
-  if (ACTIVE_LEVEL_ID !== 'level2') levelBtn.style.display = 'none';
-  else levelBtn.textContent = 'Back to Mawgan Porth';
+  // way there. Level 2 (reached through it) goes back to level 1; level 3
+  // (reached through level 2's own cave) goes back to level 2, not all the way
+  // to level 1 - each level's "back" returns to wherever its own door came from.
+  const backTarget = ACTIVE_LEVEL_ID === 'level3' ? 'level2' : ACTIVE_LEVEL_ID === 'level2' ? 'level1' : null;
+  if (!backTarget) levelBtn.style.display = 'none';
+  else levelBtn.textContent = ACTIVE_LEVEL_ID === 'level3' ? 'Back to Highfall Gorge' : 'Back to Mawgan Porth';
   levelBtn.addEventListener('click', () => {
+    if (!backTarget) return;
     // Unlike reset, this keeps (rather than clears) the current level's save -
     // save explicitly first (bypassing the `resetting` guard, which only
     // exists to stop an in-flight autosave from undoing a deliberate clearSave)
-    // then just forget which level is "active" so the next load defaults to level 1.
-    saveState({ terrain, water, rocks, player, levelId: ACTIVE_LEVEL_ID });
-    localStorage.removeItem('shoreline_active_level');
+    // then just point "active level" at wherever this level's own door leads back to.
+    saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID });
+    if (backTarget === 'level1') localStorage.removeItem('shoreline_active_level');
+    else localStorage.setItem('shoreline_active_level', backTarget);
     location.reload();
   });
 }
@@ -1352,6 +1452,7 @@ function stepFrame(dt, elapsedTime) {
   updateTideUI();
   updateVehicleUI();
   updateDoorUI();
+  updateCaveDoorUI();
   hints.update(dt);
 
   const audioSubject = drivingVehicle || player;
@@ -1387,7 +1488,7 @@ window.__game = {
     touchDigHeld, touchSmoothHeld,
     drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
     vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
-    villageDoor, doorPopupShown,
+    villageDoor, doorPopupShown, caveDoor, caveDoorPopupShown,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,
