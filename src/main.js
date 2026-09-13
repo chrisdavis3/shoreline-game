@@ -2,11 +2,12 @@ import * as THREE from 'three';
 import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=71';
 import { WaterSim } from './water.js?v=71';
 import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=71';
-import { scatterRocks } from './rocks.js?v=71';
+import { scatterRocks, Rock } from './rocks.js?v=71';
 import { Player } from './player.js?v=71';
 import { AudioSystem } from './audio.js?v=71';
 import { Particles } from './particles.js?v=71';
 import { Debris } from './debris.js?v=71';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=71';
 
 // ---------- renderer / scene / camera ----------
 
@@ -105,7 +106,20 @@ scene.add(props);
 
 const birds = buildBirds(scene);
 
-const rocks = scatterRocks(terrain, scene, 46);
+// A save carries its own rock positions/orientations (they're as much "player
+// work" as dug sand - pushing rocks to redirect the stream is a core mechanic),
+// so a restored game skips the random scatter and rebuilds the exact rocks the
+// player left behind instead.
+const savedData = loadSavedData();
+
+const rocks = savedData && Array.isArray(savedData.rocks)
+  ? savedData.rocks.map((rd) => {
+      const r = new Rock(rd.x, rd.z, rd.size, terrain);
+      if (rd.q) r.mesh.quaternion.set(rd.q[0], rd.q[1], rd.q[2], rd.q[3]);
+      scene.add(r.mesh);
+      return r;
+    })
+  : scatterRocks(terrain, scene, 46);
 
 // Hard guarantee, independent of the placement odds above: the stream must never be
 // fully dammed. Walk every row and if every cell across the channel's width ended up
@@ -135,16 +149,26 @@ const rocks = scatterRocks(terrain, scene, 46);
 
 const player = new Player(terrain);
 scene.add(player.mesh);
-player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
+if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
+else player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
 
 const particles = new Particles(scene, 320);
 const debris = new Debris(scene, terrain, water);
 
 const audio = new AudioSystem();
 
-// Pre-simulate the water system before the player ever sees it, so the stream
-// is already in a flowing steady state on arrival rather than filling from dry.
-{
+if (savedData) {
+  // Restore dug/piled terrain and the water's own depth/sediment/tide state -
+  // skip the fresh-level priming below entirely, since this already IS a real
+  // simulated state (whatever the player left it in).
+  applySavedData(savedData, terrain, water);
+  terrain.markDirty();
+  terrain.update(0);
+  terrain.refreshFineMeshFully();
+  water._syncMeshAttrs(terrain);
+} else {
+  // Pre-simulate the water system before the player ever sees it, so the stream
+  // is already in a flowing steady state on arrival rather than filling from dry.
   const PRIME_SECONDS = 40;
   const steps = Math.round(PRIME_SECONDS / water.stepDt);
   for (let s = 0; s < steps; s++) {
@@ -732,6 +756,37 @@ soundBtn.addEventListener('click', () => {
   soundBtn.textContent = `Sound: ${soundOn ? 'on' : 'off'}`;
 });
 
+// ---------- save / reset ----------
+
+// Guards the autosave-on-unload handlers below during a deliberate reset -
+// `location.reload()` itself fires `pagehide`/`visibilitychange`, which would
+// otherwise re-save (and so silently undo) the reset in the instant between
+// `clearSave()` and the reload actually taking effect. Caught live: without
+// this flag, the reset button appeared to do nothing at all.
+let resetting = false;
+
+function doSave() { if (!resetting) saveState({ terrain, water, rocks, player }); }
+
+// Periodic autosave (every dig/push/tide-tick is too frequent to serialize
+// ~140x140 float arrays on every one) plus a save right when the tab is about
+// to actually disappear - `visibilitychange`'s 'hidden' state fires reliably on
+// mobile (backgrounding, switching apps, locking the screen) where `beforeunload`
+// often does not, so it's the primary save point, not just a fallback.
+setInterval(doSave, 12000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') doSave(); });
+window.addEventListener('pagehide', doSave);
+
+const resetBtn = document.getElementById('resetBtn');
+if (resetBtn) {
+  resetBtn.addEventListener('click', () => {
+    const sure = window.confirm('Reset the whole beach back to its natural state? Everything you\'ve dug, piled, or moved will be lost - this can\'t be undone.');
+    if (!sure) return;
+    resetting = true;
+    clearSave();
+    location.reload();
+  });
+}
+
 // ---------- footstep / stream audio hookups ----------
 
 player.onFootstep = () => { if (audio.started) audio.footstep(); };
@@ -788,6 +843,9 @@ window.__game = {
     touchDigHeld, touchSmoothHeld,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
+  saveNow: doSave,
+  hasSave: () => !!loadSavedData(),
+  clearSaveNow: clearSave,
 };
 
 // Compile every material's shader program up front rather than letting the GPU
