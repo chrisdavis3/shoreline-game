@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=81';
+import {
+  GRID, CELL, SIZE, streamCenterX, coastT, warpX,
+  getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
+} from './terrain.js?v=81';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -59,6 +62,24 @@ export class WaterSim {
     this.tidePhase = Math.random() * Math.PI * 2;
     this.tidePeriod = 260; // seconds for a full tidal cycle - slow enough to notice, fast enough to see in one session
     this.tideRange = 1.9;  // metres of vertical rise/fall
+    // Waterfall source inflow rate (depth/second at each source cell) - see
+    // _seedSource/_step. Level 1's own 0.34 stays a literal inline constant in
+    // _step (untouched); this is a SEPARATE, level-gated value so level 2's
+    // single concentrated source can feed at a different rate without
+    // changing level 1's tuned number at all.
+    this._sourceRate = 0.34;
+
+    // Level 2 ("Highfall Gorge"): no tide at all - a still mountain lake at
+    // the valley's exit instead of the sea, reusing the exact same coastT/
+    // sea-relaxation machinery below with tideRange=0 (a flat, non-oscillating
+    // level) rather than adding a parallel "lake" code path. Level 1's own
+    // tide numbers above are left completely untouched.
+    if (getActiveLevel() === 'level2') {
+      this.tideLevel = 1.1;
+      this.tideRange = 0;
+      this.tidePeriod = 1;
+      this._sourceRate = 1.1; // a real waterfall's volume reads as much more than a gentle spring trickle
+    }
 
     // Per-column coastline threshold, precomputed once - every functional sea-zone
     // check below reads this instead of recomputing the noise or using a flat cutoff.
@@ -75,6 +96,22 @@ export class WaterSim {
   }
 
   _seedSource() {
+    if (getActiveLevel() === 'level2') {
+      // A single concentrated source right at the waterfall's lip - a real
+      // falls has one point of origin at height, not a spread spring line
+      // like level 1's gentle inland stream. The flux sim itself (unchanged
+      // below) then has to carry this down the near-vertical drop to the pool
+      // - see _seedChannel's own comment for why the diggable seep channel
+      // only starts BELOW that pool.
+      this.sourceCells = [];
+      const j0 = Math.round((L2_T_FALL0 * SIZE) / CELL);
+      const ci = Math.round(L2_LIP_X / CELL);
+      for (let di = -1; di <= 1; di++) {
+        const i = ci + di;
+        if (i >= 0 && i < N) this.sourceCells.push(idx(i, j0));
+      }
+      return;
+    }
     // A few cells at the inland edge act as the stream's spring, feeding water
     // in at a steady rate as if from off-map upstream.
     this.sourceCells = [];
@@ -95,7 +132,12 @@ export class WaterSim {
   // build it up from zero through a single fragile point source.
   _seedChannel(terrain) {
     this._seepProfile = [];
-    for (let j = 0; j < N; j++) {
+    // Level 2's diggable seep channel only starts BELOW the landing pool - the
+    // falls' own near-vertical face isn't a channel, it's fed purely by the
+    // concentrated source cells above (see _seedSource) and the flux sim
+    // carrying that water straight down the drop.
+    const j0 = getActiveLevel() === 'level2' ? Math.round((L2_T_FALL1 * SIZE) / CELL) : 0;
+    for (let j = j0; j < N; j++) {
       const z = j * CELL;
       const t = z / SIZE;
       const ci = streamCenterX(z) / CELL;
@@ -510,9 +552,11 @@ export class WaterSim {
     const blocked = terrain.blocked;
     const tide = this.tideHeight(this.elapsed);
 
-    // Source inflow (the stream's origin, feeding from off-map) - a modest trickle,
-    // not a flood: enough to keep a small stream visibly running.
-    for (const k of this.sourceCells) depth[k] += 0.34 * dt;
+    // Source inflow (the stream's/waterfall's origin, feeding from off-map) - a
+    // modest trickle for level 1's gentle spring, more for level 2's single
+    // concentrated waterfall point (see this._sourceRate, set once in the
+    // constructor - level 1's own rate here is unchanged from before).
+    for (const k of this.sourceCells) depth[k] += this._sourceRate * dt;
 
     // Channel seepage: real streams gain flow from side tributaries and groundwater
     // along their whole length, not only from one point source. Gently top the

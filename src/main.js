@@ -1,7 +1,13 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=81';
+import {
+  Terrain, SIZE, GRID, CELL, streamCenterX, idx,
+  setActiveLevel, L2_LIP_X, L2_T_FALL1,
+} from './terrain.js?v=81';
 import { WaterSim } from './water.js?v=81';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=81';
+import {
+  buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
+  buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
+} from './environment.js?v=81';
 import { scatterRocks, Rock } from './rocks.js?v=81';
 import { Player } from './player.js?v=81';
 import { AudioSystem } from './audio.js?v=81';
@@ -9,6 +15,16 @@ import { Particles } from './particles.js?v=81';
 import { Debris } from './debris.js?v=81';
 import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=81';
 import { Bulldozer, Excavator } from './vehicles.js?v=81';
+
+// ---------- level selection ----------
+// index.html/artifact.html's inline bootstrap script picks a level (a simple
+// level-select screen, shown before this module ever loads) and stores it
+// here before appending this <script type=module> - so by the time this runs,
+// a level is always already chosen. setActiveLevel() must run before
+// `new Terrain()`/`new WaterSim()` below - both read it synchronously once,
+// at construction time (see terrain.js's own comment on ACTIVE_LEVEL).
+const ACTIVE_LEVEL_ID = localStorage.getItem('shoreline_active_level') || 'level1';
+setActiveLevel(ACTIVE_LEVEL_ID);
 
 // Bumped alongside every ?v=N cache-bust across the project (see version.txt,
 // fetched below) - mobile Safari in particular can keep an old tab's JS
@@ -108,16 +124,26 @@ const water = new WaterSim(terrain);
 scene.add(water.mesh);
 
 const sky = buildSky(scene);
-const ocean = buildOcean(water.uniforms);
-scene.add(ocean.mesh);
+// Level 2 has no sea - the water sim's own mesh already covers its still lake
+// (see terrain.js's coastT/L2_LAKE_T0) - so skip the distant-ocean backdrop
+// plane and add the waterfall's own decorative cascade instead.
+let ocean = null, cascade = null;
+if (ACTIVE_LEVEL_ID === 'level2') {
+  cascade = buildWaterfallCascade(terrain);
+  scene.add(cascade.mesh);
+} else {
+  ocean = buildOcean(water.uniforms);
+  scene.add(ocean.mesh);
+}
 
 const birds = buildBirds(scene);
 
 // A save carries its own rock positions/orientations (they're as much "player
 // work" as dug sand - pushing rocks to redirect the stream is a core mechanic),
 // so a restored game skips the random scatter and rebuilds the exact rocks the
-// player left behind instead.
-const savedData = loadSavedData();
+// player left behind instead. Each level has its own independent save slot
+// (see save.js's keyFor) so switching levels never overwrites the other's progress.
+const savedData = loadSavedData(ACTIVE_LEVEL_ID);
 
 const rocks = savedData && Array.isArray(savedData.rocks)
   ? savedData.rocks.map((rd) => {
@@ -157,6 +183,7 @@ const rocks = savedData && Array.isArray(savedData.rocks)
 const player = new Player(terrain);
 scene.add(player.mesh);
 if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
+else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(SIZE * 0.5, SIZE * 0.30); // just below the falls' landing pool
 else player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
 
 const particles = new Particles(scene, 320);
@@ -198,10 +225,14 @@ if (savedData) {
 // staircase). Placing decoration first meant grass/pebbles near the banks
 // were pinned to the PRE-erosion height, then the ground moved out from
 // under them during priming - "grass floating in the air" by the river.
-scene.add(buildSkirt(terrain));
-scene.add(buildVillage(terrain));
-const props = scatterProps(terrain);
-scene.add(props);
+if (ACTIVE_LEVEL_ID === 'level2') {
+  scene.add(buildSkirtLevel2(terrain));
+  scene.add(scatterPropsLevel2(terrain));
+} else {
+  scene.add(buildSkirt(terrain));
+  scene.add(buildVillage(terrain));
+  scene.add(scatterProps(terrain));
+}
 
 // ---------- vehicles ----------
 
@@ -254,9 +285,19 @@ function placeVehicles(terrainRef) {
   return specs.map((spec, i) => createVehicle(spec.type, chosen[i].x, chosen[i].z, spec.heading, terrainRef));
 }
 
-const vehicles = savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
-  ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
-  : placeVehicles(terrain);
+// placeVehicles()'s candidate coordinates are tuned for level 1's village
+// clearing (see its own comment) - the concurrent Level 2 terrain didn't
+// exist yet when that placement logic was written, so it has no idea a
+// waterfall/gorge occupies that same coordinate range there. Rather than let
+// a bulldozer spawn wedged into a cliff face, vehicles stay level-1-only
+// until they're deliberately placed somewhere sane in level 2 (matches the
+// coordination note both agents were given: "they'll place vehicles in Level
+// 2 once your terrain exists" - that placement work just hasn't landed yet).
+const vehicles = ACTIVE_LEVEL_ID !== 'level1' ? [] : (
+  savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
+    ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
+    : placeVehicles(terrain)
+);
 
 // The single vehicle the player currently occupies, or null when on foot.
 let drivingVehicle = null;
@@ -980,7 +1021,14 @@ const hints = {
   queue: [],
   current: null,
   timer: 0,
-  messages: {
+  messages: ACTIVE_LEVEL_ID === 'level2' ? {
+    intro: 'A shovel. A waterfall feeding a river through the gorge. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
+    dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
+    pickUp: 'Carry it to the water. E to set it down.',
+    putDown: null,
+    pushRock: null,
+    tideRise: null,
+  } : {
     intro: 'A shovel. A stream finding its way to the sea. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
     dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
     pickUp: 'Carry it to the water. E to set it down.',
@@ -1021,8 +1069,15 @@ setTimeout(() => hints.trigger('intro'), 1400);
 const tideMarker = document.getElementById('tideMarker');
 const tideLabel = document.getElementById('tideLabel');
 let lastTideHeight = water.tideHeight(0);
+// Level 2 is a still mountain lake, not a tidal sea (see water.js's own
+// tideRange=0 for level 2) - the tide readout has nothing to show there.
+if (ACTIVE_LEVEL_ID === 'level2') {
+  const tideWrap = document.getElementById('tideWrap');
+  if (tideWrap) tideWrap.style.display = 'none';
+}
 
 function updateTideUI() {
+  if (ACTIVE_LEVEL_ID === 'level2') return;
   const h = water.tideHeight(water.elapsed);
   const norm = THREE.MathUtils.clamp((h - (water.tideLevel - water.tideRange / 2)) / water.tideRange, 0, 1);
   tideMarker.style.left = `${norm * 100}%`;
@@ -1084,7 +1139,7 @@ soundBtn.addEventListener('click', () => {
 // this flag, the reset button appeared to do nothing at all.
 let resetting = false;
 
-function doSave() { if (!resetting) saveState({ terrain, water, rocks, player, vehicles }); }
+function doSave() { if (!resetting) saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID }); }
 
 // Periodic autosave (every dig/push/tide-tick is too frequent to serialize
 // ~140x140 float arrays on every one) plus a save right when the tab is about
@@ -1097,11 +1152,29 @@ window.addEventListener('pagehide', doSave);
 
 const resetBtn = document.getElementById('resetBtn');
 if (resetBtn) {
+  const resetLabel = ACTIVE_LEVEL_ID === 'level2' ? 'Reset gorge' : 'Reset beach';
+  resetBtn.textContent = resetLabel;
   resetBtn.addEventListener('click', () => {
-    const sure = window.confirm('Reset the whole beach back to its natural state? Everything you\'ve dug, piled, or moved will be lost - this can\'t be undone.');
+    const sure = window.confirm('Reset this level back to its natural state? Everything you\'ve dug, piled, or moved will be lost - this can\'t be undone.');
     if (!sure) return;
     resetting = true;
-    clearSave();
+    clearSave(ACTIVE_LEVEL_ID);
+    location.reload();
+  });
+}
+
+// Returns to the level-select screen (index.html/artifact.html's inline
+// bootstrap script) without touching either level's save - just clears which
+// level is "active" so the next load shows the picker again.
+const levelBtn = document.getElementById('levelBtn');
+if (levelBtn) {
+  levelBtn.addEventListener('click', () => {
+    // Unlike reset, this keeps (rather than clears) the current level's save -
+    // save explicitly first (bypassing the `resetting` guard, which only
+    // exists to stop an in-flight autosave from undoing a deliberate clearSave)
+    // then just forget which level is "active" so the next load shows the picker.
+    saveState({ terrain, water, rocks, player, levelId: ACTIVE_LEVEL_ID });
+    localStorage.removeItem('shoreline_active_level');
     location.reload();
   });
 }
@@ -1138,6 +1211,7 @@ player.onFootstep = () => { if (audio.started) audio.footstep(); };
 
 const clock = new THREE.Clock();
 let streamCheckAccum = 0;
+let fallsSprayAccum = 0;
 
 // Split from animate() so a frame can be driven manually (see window.__game
 // .stepFrame) for testing/debugging - `requestAnimationFrame` doesn't reliably
@@ -1176,7 +1250,22 @@ function stepFrame(dt, elapsedTime) {
 
   updateCamera(dt);
   sky.material.uniforms.uTime.value = elapsedTime;
-  ocean.uniforms.uTime.value = elapsedTime;
+  if (ocean) ocean.uniforms.uTime.value = elapsedTime;
+  if (cascade) {
+    cascade.update(elapsedTime);
+    // Spray at the base of the falls - a scripted supplement to the sim's own
+    // real (but vertical-velocity-free) flow there, see buildWaterfallCascade.
+    fallsSprayAccum += dt;
+    if (fallsSprayAccum > 0.1) {
+      fallsSprayAccum = 0;
+      const px = L2_LIP_X + (Math.random() - 0.5) * 4;
+      const pz = L2_T_FALL1 * SIZE + (Math.random() - 0.5) * 3;
+      const py = terrain.sampleHeightBilinear(px, pz);
+      particles.burst(px, py + 0.3, pz, 3, {
+        color: [0.86, 0.93, 0.96], life: 0.5, up: 1.2, upVar: 0.7, spread: 1.6,
+      });
+    }
+  }
   birds.update(elapsedTime);
   updateTideUI();
   updateVehicleUI();
@@ -1207,6 +1296,7 @@ window.__game = {
   enterVehicleByIndex: (i) => { const v = vehicles[i]; if (v && !v.occupied) enterVehicle(v); return !!drivingVehicle; },
   exitVehicleNow: () => exitVehicle(),
   requestVehicleDig: () => { if (drivingVehicle && drivingVehicle.type === 'excavator') drivingVehicle.requestDig(); },
+  levelId: ACTIVE_LEVEL_ID,
   setTouchDig: (v) => { touchDigHeld = v; },
   debug: () => ({
     camDist, camDistTarget, introTimer, clockElapsed: clock.elapsedTime,
@@ -1218,8 +1308,8 @@ window.__game = {
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,
   stepFrame: (dt, n = 1) => { for (let i = 0; i < n; i++) stepFrame(dt, clock.elapsedTime + dt * i); },
-  hasSave: () => !!loadSavedData(),
-  clearSaveNow: clearSave,
+  hasSave: () => !!loadSavedData(ACTIVE_LEVEL_ID),
+  clearSaveNow: () => clearSave(ACTIVE_LEVEL_ID),
 };
 
 // Compile every material's shader program up front rather than letting the GPU

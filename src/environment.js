@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx } from './terrain.js?v=81';
+import {
+  GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
+  L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
+} from './terrain.js?v=81';
 import { Noise2D } from './noise.js?v=81';
 
 const decoNoise = new Noise2D(555);
@@ -849,4 +852,278 @@ export function buildBirds(scene) {
       }
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Level 2 ("Highfall Gorge") decoration - pine-forested valley walls and
+// mossy scree/logs instead of level 1's beach pebbles/dune grass/village, plus
+// a scripted waterfall cascade at the falls' own near-vertical face (see
+// terrain.js's L2_* constants). water.js's flux sim genuinely carries real
+// simulated water down that same slope unchanged - this is a purely visual
+// overlay that sells the "falling water" look a 2D shallow-water sim (no
+// vertical velocity component of its own) can't produce by itself.
+
+// A large low-poly surrounding mountain range, mirroring buildSkirt's role for
+// level 1 but far simpler - level 2 has no coastline to trace (insetCells/
+// warpX are no-ops here, see terrain.js), just the real terrain's own
+// rectangular footprint continuing outward into hazy distant peaks.
+export function buildSkirtLevel2(terrain) {
+  const span = SIZE * 5;
+  const halfSpan = span / 2;
+  const coreStep = 1.8;
+  const growth = 1.4;
+  const xs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.1, SIZE * 1.1, coreStep, growth);
+  const zs = buildAxisSamples(SIZE / 2 - halfSpan, SIZE / 2 + halfSpan, -SIZE * 0.1, SIZE * 1.1, coreStep, growth);
+  const nx = xs.length, nz = zs.length;
+
+  const positions = new Float32Array(nx * nz * 3);
+  const colors = new Float32Array(nx * nz * 3);
+  const uvs = new Float32Array(nx * nz * 2);
+
+  const rockDark = new THREE.Color('#121316');
+  const rockMid = new THREE.Color('#3c3f42');
+  const rockLight = new THREE.Color('#8b8d87');
+  const dirt = new THREE.Color('#4a3a28');
+  const moss = new THREE.Color('#3f4f34');
+  const mossWarm = new THREE.Color('#5c6b3f');
+  const farHaze = new THREE.Color('#7f9296');
+  const tmpC = new THREE.Color();
+  const tmpMoss = new THREE.Color();
+
+  for (let jz = 0; jz < nz; jz++) {
+    const z = zs[jz];
+    for (let ix = 0; ix < nx; ix++) {
+      const x = xs[ix];
+      const k = jz * nx + ix;
+      const outside = Math.max(0, -x, x - SIZE, -z, z - SIZE);
+      let y;
+      if (outside <= 0) {
+        y = -60; // directly under the real (simulated) terrain - hidden
+      } else {
+        const nearRise = Math.pow(Math.min(1, outside / 18), 0.5);
+        const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.6)), 0.75);
+        const rise = nearRise * 0.7 + farRise * 0.55;
+        const warpX_ = x + decoNoise.fbm(x * 0.008 + 1000, z * 0.008 + 1000, 3) * 55;
+        const warpZ_ = z + decoNoise.fbm(x * 0.008 + 3000, z * 0.008 + 3000, 3) * 55;
+        const n = decoNoise.fbm(warpX_ * 0.012, warpZ_ * 0.012, 4);
+        const bigRock = decoNoise.ridged(warpX_ * 0.02 + 500, warpZ_ * 0.02 + 500, 4) - 0.5;
+        const fineRock = decoNoise.ridged(warpX_ * 0.09 + 900, warpZ_ * 0.09 + 900, 3) - 0.5;
+        const edgeY = terrain.sampleHeightBilinear(
+          THREE.MathUtils.clamp(x, 1, SIZE - 1),
+          THREE.MathUtils.clamp(z, 1, SIZE - 1),
+        );
+        y = edgeY + rise * (40 + n * 16) + bigRock * 24 * nearRise + fineRock * 8 * nearRise;
+      }
+      positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
+      uvs[k * 2] = ix / (nx - 1); uvs[k * 2 + 1] = jz / (nz - 1);
+
+      const distT = THREE.MathUtils.clamp((outside - 60) / (SIZE * 2.2), 0, 1);
+      const strataPhase = x * 0.85 + y * 1.4;
+      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+      const heightT = THREE.MathUtils.clamp(y / 70, 0, 1);
+      tmpC.copy(rockMid).lerp(rockLight, heightT * 0.7);
+      tmpC.lerp(rockDark, strata * 0.3);
+      tmpC.lerp(dirt, 0.18);
+      const mossNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
+      const mossAmount = THREE.MathUtils.clamp((y - 8) / 20, 0, 1)
+        * THREE.MathUtils.clamp((mossNoise - 0.15) * 2, 0, 1) * (1 - heightT * 0.6);
+      tmpMoss.copy(moss).lerp(mossWarm, THREE.MathUtils.clamp((decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3) - 0.1) * 1.6, 0, 1));
+      tmpC.lerp(tmpMoss, mossAmount * 0.85);
+      tmpC.lerp(farHaze, distT * distT * 0.6);
+      colors[k * 3] = tmpC.r; colors[k * 3 + 1] = tmpC.g; colors[k * 3 + 2] = tmpC.b;
+    }
+  }
+
+  const indices = [];
+  for (let jz = 0; jz < nz - 1; jz++) {
+    for (let ix = 0; ix < nx - 1; ix++) {
+      const a = jz * nx + ix, b = jz * nx + ix + 1;
+      const c = (jz + 1) * nx + ix, d = (jz + 1) * nx + ix + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, flatShading: true });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = false;
+  mesh.renderOrder = -1;
+  return mesh;
+}
+
+// Pine trees on the valley's slopes, mossy scree, and fallen logs - the
+// dirt/rock equivalent of level 1's scatterProps (beach pebbles, dune grass,
+// driftwood, sea-arch), none of which fit a mountain gorge.
+export function scatterPropsLevel2(terrain) {
+  const group = new THREE.Group();
+  const dummy = new THREE.Object3D();
+  const tmpCol = new THREE.Color();
+
+  // Pine trees: a simple trunk + cone canopy, instanced. Avoided on the
+  // falls' own sheer face (too steep for anything to root) and thinned by
+  // noise elsewhere so the slopes read as a real, uneven forest.
+  const trunkGeo = new THREE.CylinderGeometry(0.09, 0.14, 1.1, 5);
+  trunkGeo.translate(0, 0.55, 0);
+  const trunkMat = new THREE.MeshStandardMaterial({ color: '#4a3626', roughness: 0.9, flatShading: true });
+  const canopyGeo = new THREE.ConeGeometry(0.85, 2.6, 7);
+  canopyGeo.translate(0, 1.1 + 1.3, 0);
+  const canopyMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.85, flatShading: true });
+  const canopyTones = ['#2c3d24', '#35482a', '#243620'].map((c) => new THREE.Color(c));
+
+  const TREE_COUNT = 850;
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, TREE_COUNT);
+  const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, TREE_COUNT);
+  trunks.castShadow = true; canopies.castShadow = true; canopies.receiveShadow = true;
+  let tc = 0;
+  for (let n = 0; n < TREE_COUNT * 3 && tc < TREE_COUNT; n++) {
+    const x = Math.random() * SIZE, z = Math.random() * SIZE;
+    const y = terrain.sampleHeightBilinear(x, z);
+    const eps = 0.7;
+    const hx1 = terrain.sampleHeightBilinear(x + eps, z), hx0 = terrain.sampleHeightBilinear(x - eps, z);
+    const hz1 = terrain.sampleHeightBilinear(x, z + eps), hz0 = terrain.sampleHeightBilinear(x, z - eps);
+    const slope = (Math.abs(hx1 - hx0) + Math.abs(hz1 - hz0)) / (4 * eps);
+    if (slope > 0.8) continue; // too steep - bare rock/the falls face, not forest
+    const density = decoNoise.fbm(x * 0.05 + 20, z * 0.05 + 20, 3);
+    if (density < 0.15) continue;
+    const scale = 0.7 + Math.random() * 0.9;
+    dummy.position.set(warpX(x, z), y, z);
+    dummy.rotation.set(0, Math.random() * Math.PI, 0);
+    dummy.scale.setScalar(scale);
+    dummy.updateMatrix();
+    trunks.setMatrixAt(tc, dummy.matrix);
+    canopies.setMatrixAt(tc, dummy.matrix);
+    canopies.setColorAt(tc, tmpCol.copy(canopyTones[Math.floor(Math.random() * canopyTones.length)]).multiplyScalar(0.85 + Math.random() * 0.3));
+    tc++;
+  }
+  trunks.count = tc; canopies.count = tc;
+  group.add(trunks); group.add(canopies);
+
+  // Mossy scree/boulders (decorative only, no collision - see rocks.js's Rock
+  // class for the pickup-able kind) scattered across the valley floor/banks.
+  const screeGeo = new THREE.DodecahedronGeometry(1, 0);
+  const screeMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, flatShading: true });
+  const screeTones = ['#5c5a54', '#464540', '#6b6862', '#3c3b37'].map((c) => new THREE.Color(c));
+  const SCREE_COUNT = 500;
+  const scree = new THREE.InstancedMesh(screeGeo, screeMat, SCREE_COUNT);
+  scree.castShadow = true; scree.receiveShadow = true;
+  let sc = 0;
+  for (let n = 0; n < SCREE_COUNT * 3 && sc < SCREE_COUNT; n++) {
+    const x = Math.random() * SIZE, z = Math.random() * SIZE;
+    const density = decoNoise.fbm(x * 0.08 + 55, z * 0.08 + 55, 3);
+    if (density < 0.1) continue;
+    const y = terrain.sampleHeightBilinear(x, z);
+    const scale = 0.1 + Math.random() * 0.22;
+    dummy.position.set(warpX(x, z), y + scale * 0.3, z);
+    dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    dummy.scale.set(scale, scale * 0.75, scale);
+    dummy.updateMatrix();
+    scree.setMatrixAt(sc, dummy.matrix);
+    scree.setColorAt(sc, tmpCol.copy(screeTones[Math.floor(Math.random() * screeTones.length)]));
+    sc++;
+  }
+  scree.count = sc;
+  group.add(scree);
+
+  // Fallen logs along the river valley.
+  const logGeo = new THREE.CylinderGeometry(0.1, 0.14, 2.6, 6);
+  const logMat = new THREE.MeshStandardMaterial({ color: '#3e2f1f', roughness: 0.88, flatShading: true });
+  const LOG_COUNT = 16;
+  const logs = new THREE.InstancedMesh(logGeo, logMat, LOG_COUNT);
+  logs.castShadow = true;
+  let lc = 0, attempts = 0;
+  while (lc < LOG_COUNT && attempts < LOG_COUNT * 20) {
+    attempts++;
+    const x = Math.random() * SIZE, z = SIZE * L2_T_FALL1 + Math.random() * SIZE * (1 - L2_T_FALL1) * 0.9;
+    const y = terrain.sampleHeightBilinear(x, z);
+    dummy.position.set(warpX(x, z), y + 0.1, z);
+    dummy.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.3, 0, Math.random() * Math.PI);
+    dummy.scale.setScalar(0.6 + Math.random() * 0.7);
+    dummy.updateMatrix();
+    logs.setMatrixAt(lc, dummy.matrix);
+    lc++;
+  }
+  logs.count = lc;
+  group.add(logs);
+
+  return group;
+}
+
+// A scripted, purely decorative "curtain of water" sheet down the falls' own
+// near-vertical face. water.js's real flux sim DOES carry simulated water
+// down this same slope (it isn't blocked or special-cased there) - but a 2D
+// shallow-water sim has no vertical velocity/free-fall component of its own,
+// so on its own it would only ever read as a fast, thin sheet clinging to the
+// rock, not a falling curtain. This overlay is what actually sells "waterfall".
+export function buildWaterfallCascade(terrain) {
+  const topZ = L2_T_FALL0 * SIZE, botZ = L2_T_FALL1 * SIZE;
+  const topY = terrain.sampleHeightBilinear(L2_LIP_X, Math.max(0.5, topZ)) + 0.5;
+  const botY = terrain.sampleHeightBilinear(L2_LIP_X, botZ) - 1.0;
+  const width = 5.5;
+  const height = Math.max(4, topY - botY);
+
+  const geo = new THREE.PlaneGeometry(width, 1, 10, 44);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const px = pos.getX(i);
+    const v = pos.getY(i) + 0.5; // 0 at the pool, 1 at the lip (PlaneGeometry's own uv.y matches this)
+    const y = THREE.MathUtils.lerp(botY, topY, v);
+    const z = THREE.MathUtils.lerp(botZ, topZ, v);
+    // Arcs slightly clear of the rock face partway down, the way a real falls
+    // doesn't cling flat to the cliff behind it.
+    const bow = Math.sin(v * Math.PI) * 0.9;
+    pos.setXYZ(i, px, y, z + bow);
+  }
+  geo.computeVertexNormals();
+
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    uniforms: {
+      uTime: { value: 0 },
+      uFoam: { value: new THREE.Color('#eef6fa') },
+      uWater: { value: new THREE.Color('#bfe0e8') },
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform vec3 uFoam, uWater;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+      }
+      void main() {
+        vec2 p = vUv * vec2(6.0, 22.0) + vec2(0.0, -uTime * 3.2);
+        float streak = noise(p) * 0.6 + noise(p * 2.3 + 11.0) * 0.4;
+        float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
+        float baseFoam = smoothstep(0.0, 0.22, vUv.y) * (1.0 - smoothstep(0.22, 0.55, vUv.y));
+        float alpha = clamp((0.32 + streak * 0.5) * edge + baseFoam * 0.5, 0.0, 0.92);
+        vec3 color = mix(uWater, uFoam, clamp(streak * 0.6 + baseFoam * 0.8, 0.0, 1.0));
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(L2_LIP_X, 0, 0);
+  mesh.renderOrder = 2;
+  mesh.frustumCulled = false;
+  return { mesh, height, update(t) { mat.uniforms.uTime.value = t; } };
 }

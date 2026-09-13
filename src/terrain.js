@@ -15,6 +15,20 @@ const n3 = new Noise2D(4242);
 
 function idx(i, j) { return j * GRID + i; }
 
+// ---------------------------------------------------------------------------
+// Level selection. Two levels share this one module (GRID/CELL/SIZE, the
+// Terrain class's dig/pile/erosion machinery, and water.js's flux sim are all
+// untouched by which level is active) - only the handful of functions below
+// that actually decide the LAND SHAPE (streamCenterX, coastT, insetCells) and
+// Terrain's own _generate()/_colorAt branch per level, as parallel profiles
+// rather than forking the engine. Callers (main.js) must call setActiveLevel()
+// BEFORE constructing Terrain/WaterSim - both read this synchronously at
+// construction time, there's no live-switching mid-session.
+export const LEVEL_IDS = ['level1', 'level2'];
+let ACTIVE_LEVEL = 'level1';
+export function setActiveLevel(id) { ACTIVE_LEVEL = LEVEL_IDS.includes(id) ? id : 'level1'; }
+export function getActiveLevel() { return ACTIVE_LEVEL; }
+
 // Stream centreline: a gentle meander from the dunes down to the sea.
 //
 // CORRECTED (this was backwards for a whole prior session): earlier code and
@@ -41,9 +55,43 @@ function idx(i, j) { return j * GRID + i; }
 // re-introduce the exact "wizard hat" pinch that band was built to avoid (see
 // insetCells' own comment). 31 cells of margin keeps the stream clear of it at
 // every t, same as the old placement did on the other side.
-function streamCenterX(z) {
+function streamCenterXLevel1(z) {
   const t = z / SIZE;
   return SIZE * 0.78 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
+}
+
+// ---------------------------------------------------------------------------
+// Level 2 ("Highfall Gorge"): a steep mountain valley whose water source is a
+// single waterfall partway down one side (not a spread inland stream origin),
+// landing in a pool that feeds a diggable river running down the valley to a
+// still mountain lake at the far end. z=0 is high mountainside here (mirrors
+// level 1's "z=0 is inland" convention), z=SIZE is the low valley
+// exit/lakeside. Kept as its own fully parallel set of constants/functions
+// rather than branching level 1's own (heavily-tuned, Mawgan-Porth-specific)
+// formulas - see setActiveLevel above.
+export const L2_LIP_X = SIZE * 0.46;      // waterfall lip, world x (metres)
+export const L2_T_FALL0 = 0.09;           // t where the near-vertical drop begins
+export const L2_T_FALL1 = 0.20;           // t where it lands in the base pool
+export const L2_TOP_H = 52;               // mountainside height above the falls
+export const L2_POOL_H = 7;               // landing-pool floor height
+export const L2_LAKE_H = 1.3;             // still lake level at the valley's exit
+export const L2_WALL_HEIGHT = 55;         // added valley-wall rise above the floor
+
+function streamCenterXLevel2(z) {
+  const t = z / SIZE;
+  // Above and at the falls the channel runs straight down from the lip - a
+  // real waterfall doesn't meander on its way over the edge. Only the river
+  // BELOW the landing pool meanders, same idea as level 1's stream but around
+  // a fixed downstream anchor instead of a diagonal inland-to-sea run.
+  if (t <= L2_T_FALL1) return L2_LIP_X;
+  const tt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
+  const meander = Math.sin(tt * 4.0 + 0.5) * SIZE * 0.09 * (0.25 + tt * 0.75)
+    + n2.fbm(1, tt * 3.2 + 70, 2) * SIZE * 0.03;
+  return L2_LIP_X + meander;
+}
+
+function streamCenterX(z) {
+  return ACTIVE_LEVEL === 'level2' ? streamCenterXLevel2(z) : streamCenterXLevel1(z);
 }
 
 // The coastline's t-threshold (0..1, inland->sea) as a function of column i.
@@ -70,7 +118,19 @@ function streamCenterX(z) {
 // centre and small natural irregularity - not a large per-column swing.
 const coastRoughNoise = new Noise2D(3721);
 
-function coastTContinuous(ci) {
+// Level 2 has no coastline/coves at all - just a still lake pooling at the
+// valley's low exit end. Reuses the exact same "coastT" mechanism (per-column
+// t-threshold beyond which water.js relaxes depth toward a `tide` level and
+// stops eroding) so the whole sea-coupling/erosion-skip machinery in water.js
+// keeps working unchanged for a lake instead of a tidal sea - see
+// setActiveLevel's own comment. Only the threshold and its (much smaller,
+// non-cove-shaped) per-column wobble differ.
+const L2_LAKE_T0 = 0.90;
+function coastTContinuousLevel2(ci) {
+  return L2_LAKE_T0 + coastRoughNoise.fbm(ci * 0.05, 80, 2) * 0.015;
+}
+
+function coastTContinuousLevel1(ci) {
   const u = THREE.MathUtils.clamp(ci, 0, GRID - 1) / (GRID - 1);
   const crescent = Math.sin(Math.PI * u); // 0 at both headlands, 1 at the bay's centre
   const bulge = Math.pow(crescent, 1.3);
@@ -89,14 +149,16 @@ function coastTContinuous(ci) {
 }
 
 export function coastT(i) {
-  return coastTContinuous(Math.round(THREE.MathUtils.clamp(i, 0, GRID - 1)));
+  const ci = Math.round(THREE.MathUtils.clamp(i, 0, GRID - 1));
+  return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(ci) : coastTContinuousLevel1(ci);
 }
 
 // Continuous (non-staircased) version for callers evaluating at fractional i
 // (fine render-mesh spacing, e.g. insetCells() below) - coastT() itself rounds
 // since most callers index one specific simulation column.
 function coastTSmooth(i) {
-  return coastTContinuous(THREE.MathUtils.clamp(i, 0, GRID - 1));
+  const c = THREE.MathUtils.clamp(i, 0, GRID - 1);
+  return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(c) : coastTContinuousLevel1(c);
 }
 
 const edgeRoughNoise = new Noise2D(2718);
@@ -148,6 +210,11 @@ const edgeRoughNoise = new Noise2D(2718);
 // and only render positions - the (i, j) simulation grid underneath stays a
 // rectangle.
 export function insetCells(i, t) {
+  // Level 2 is a valley cut by rock walls, not an organic coastline - it wants
+  // straight edges right out to the map boundary (the walls themselves already
+  // supply all the shape), not level 1's coastline-tracing taper. Returning 0
+  // here makes warpX() below a no-op automatically (see its own early-out).
+  if (ACTIVE_LEVEL === 'level2') return 0;
   const ct = coastTSmooth(i);
   // 0 = a narrow rocky point (real coastline already close to the dune line),
   // 1 = a wide sandy apron in front of this column.
@@ -351,6 +418,13 @@ export class Terrain {
       rockLight: new THREE.Color('#8b8d87'),        // cool pale grey, drier rock higher up the cliff
       turnedSand: new THREE.Color('#7c6142'),      // piled/disturbed rim - lighter, "just turned"
       turnedSandDug: new THREE.Color('#4a3720'),   // freshly dug basin - darker, damp-looking
+      // Level 2 palette: dirt and rock, no sand tan or coastal grass green -
+      // rockDark/rockMid/rockLight above are already a cool grey slate that
+      // works unchanged for a mountain gorge's rock; only dirt/moss are new.
+      dirt: new THREE.Color('#4a3a28'),
+      dirtLight: new THREE.Color('#6b5540'),
+      moss: new THREE.Color('#3f4f34'),
+      mossWarm: new THREE.Color('#5c6b3f'),
     };
     this._cBase = new THREE.Color();
     this._cTone = new THREE.Color();
@@ -388,6 +462,11 @@ export class Terrain {
   }
 
   _generate() {
+    if (ACTIVE_LEVEL === 'level2') this._generateLevel2();
+    else this._generateLevel1();
+  }
+
+  _generateLevel1() {
     for (let j = 0; j < GRID; j++) {
       for (let i = 0; i < GRID; i++) {
         const x = i * CELL, z = j * CELL;
@@ -749,6 +828,118 @@ export class Terrain {
     this.height.set(this.bedrock);
   }
 
+  // Level 2's terrain: a steep valley whose walls rise sharply on both sides
+  // of a narrow river corridor, fed by a single waterfall partway down one
+  // side (not level 1's spread inland stream origin). See the L2_* constants
+  // and streamCenterXLevel2 above for the shared shape/position data (also
+  // read by water.js for the flux sim's source cells and the cascade's own
+  // decorative placement in environment.js).
+  _generateLevel2() {
+    for (let j = 0; j < GRID; j++) {
+      for (let i = 0; i < GRID; i++) {
+        const x = i * CELL, z = j * CELL;
+        const t = z / SIZE; // 0 = high mountainside, 1 = the lake at the valley's exit
+
+        // Valley-floor centreline elevation: flat-ish high mountain plateau
+        // above the falls, a steep (mostly near-vertical in the middle) drop
+        // through the falls themselves, then a real but gentler descent down
+        // the diggable river valley to the lake.
+        let floorH;
+        if (t <= L2_T_FALL0) {
+          floorH = L2_TOP_H;
+        } else if (t <= L2_T_FALL1) {
+          const ft = (t - L2_T_FALL0) / (L2_T_FALL1 - L2_T_FALL0);
+          // Quintic smoothstep: zero slope at both ends (so it hands off
+          // smoothly to the flat plateau above and the levelling-out pool
+          // below), steepest through the middle - that middle third works out
+          // to roughly 80 degrees, a genuine near-vertical cliff face, not
+          // just a steep hill.
+          const eased = ft * ft * ft * (ft * (ft * 6 - 15) + 10);
+          floorH = L2_TOP_H - (L2_TOP_H - L2_POOL_H) * eased;
+        } else {
+          const rt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
+          const eased2 = 1 - Math.pow(1 - rt, 1.6);
+          floorH = L2_POOL_H - (L2_POOL_H - L2_LAKE_H) * eased2;
+        }
+
+        const cx = streamCenterXLevel2(z);
+        const ci = cx / CELL;
+        const distCells = Math.abs(i - ci);
+
+        // Narrow gorge right around the falls, widening into a real (if still
+        // narrow, steep-sided) valley floor downstream.
+        const halfWidth = t <= L2_T_FALL1
+          ? 5 + 3 * Math.min(1, t / L2_T_FALL1)
+          : 9 + 10 * Math.min(1, (t - L2_T_FALL1) / (1 - L2_T_FALL1));
+        const distToWallEdge = Math.max(0, distCells - halfWidth);
+        // Walls taper down somewhat toward the valley's low exit end, so it
+        // reads as opening up rather than staying a uniform-height trench for
+        // its whole length.
+        const wallGain = L2_WALL_HEIGHT * (1 - 0.55 * Math.min(1, t * 1.15));
+        const wallRise = Math.pow(Math.min(1, distToWallEdge / 22), 0.6) * wallGain;
+
+        let h = floorH + wallRise;
+
+        // Carve an actual riverbed INTO the flat valley floor below the pool -
+        // without this the whole (fairly wide) flat floor sits at one uniform
+        // height and water spreads to fill it evenly like a flooded valley,
+        // not a defined river. A narrower, deeper channel at the centreline
+        // (mirrors level 1's own stream carve - see streamCenterXLevel1's
+        // carve loop) gives the water somewhere lower to concentrate, leaving
+        // the wider floor around it as dry, walkable diggable banks.
+        if (t > L2_T_FALL1) {
+          const rt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
+          const chanWidth = 2.6 + 2.4 * rt;
+          const chanCarve = Math.exp(-Math.pow(distCells / chanWidth, 2)) * 1.7;
+          h -= chanCarve;
+        }
+
+        // Fine dirt/rock detail - much calmer right on the falls' own sheer
+        // face (a real cliff doesn't have loose undulating texture the way a
+        // slope of scree does) than on the open valley walls/floor.
+        const nearFallsFace = t > L2_T_FALL0 - 0.02 && t < L2_T_FALL1 + 0.03 && distCells < halfWidth + 3;
+        const detail = n1.fbm(i * 0.05, j * 0.05, 4);
+        h += detail * (nearFallsFace ? 0.6 : 2.2);
+
+        // A shallow landing pool right at the base of the falls, so the
+        // cascade has somewhere real to land rather than running straight off
+        // a knife-edge into the ordinary valley floor slope.
+        const poolDist = Math.sqrt((x - L2_LIP_X) ** 2 + (z - L2_T_FALL1 * SIZE) ** 2);
+        if (poolDist < 7) h -= (1 - poolDist / 7) * 2.2;
+
+        this.bedrock[idx(i, j)] = h;
+
+        // Hardness: the falls' own face and the valley walls are bare rock;
+        // the river corridor and valley floor are looser, diggable dirt.
+        let hard = Math.min(1, distToWallEdge / 9);
+        if (nearFallsFace) hard = Math.max(hard, 0.88);
+        const outcrop = n2.fbm(i * 0.08, j * 0.08, 3);
+        if (outcrop > 0.45) hard = Math.max(hard, (outcrop - 0.45) * 2.8);
+        this.hardness[idx(i, j)] = Math.min(1, hard);
+      }
+    }
+
+    // Bare rock wherever the ground itself is genuinely steep (same slope-
+    // exposure technique as level 1's own pass - see _generateLevel1) -
+    // excludes only the river corridor itself, which should read as gravelly
+    // dirt riverbed, not a rock canyon, regardless of incidental slope.
+    for (let j = 1; j < GRID - 1; j++) {
+      const z = j * CELL;
+      const riverI = streamCenterXLevel2(z) / CELL;
+      const riverWidth = 9;
+      for (let i = 1; i < GRID - 1; i++) {
+        if (Math.abs(i - riverI) < riverWidth) continue;
+        const k = idx(i, j);
+        const hL = this.bedrock[idx(i - 1, j)], hR = this.bedrock[idx(i + 1, j)];
+        const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];
+        const slope = (Math.abs(hR - hL) + Math.abs(hU - hD)) / (4 * CELL);
+        this.hardness[k] = Math.max(this.hardness[k], Math.min(1, slope * 1.2));
+      }
+    }
+
+    this.height.set(this.bedrock);
+  }
+
   sampleHeightBilinear(x, z) {
     const fx = THREE.MathUtils.clamp(x / CELL, 0, GRID - 1.001);
     const fz = THREE.MathUtils.clamp(z / CELL, 0, GRID - 1.001);
@@ -821,6 +1012,59 @@ export class Terrain {
   // colour - this plus the sharpened geometry above is what makes a scoop read as
   // an actual hole rather than a colour smudge.
   _colorAt(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
+    if (ACTIVE_LEVEL === 'level2') this._colorAtLevel2(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
+    else this._colorAtLevel1(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
+  }
+
+  // Dirt/rock palette (no sand or coastal turf) with mossy patches on gentler,
+  // sheltered slopes - mirrors _colorAtLevel1's structure (same strata/wet/
+  // disturbance techniques) so the two levels read as consistent quality
+  // without sharing literal colour values that wouldn't fit a mountain gorge.
+  _colorAtLevel2(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
+    const P = this._pal;
+    const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
+
+    const heightT = THREE.MathUtils.clamp((h - 2) / 45, 0, 1);
+    const base = this._cBase.copy(P.dirt).lerp(P.dirtLight, heightT * 0.5);
+
+    // Moss patches: gentle, damp-ish, mid-hardness ground only - not the sheer
+    // rock face, not the driest exposed dirt.
+    const mossNoise = n1.fbm(fx * 0.12 + 200, fz * 0.12 + 200, 3);
+    const mossSlopeOk = THREE.MathUtils.clamp(1 - slope * 2.2, 0, 1);
+    const mossPatch = THREE.MathUtils.clamp((mossNoise - 0.12) * 2.2, 0, 1) * mossSlopeOk * (1 - hardness * 0.6);
+    const mossWarmth = THREE.MathUtils.clamp((n2.fbm(fx * 0.1 + 900, fz * 0.1 + 900, 2) - 0.1) * 1.6, 0, 1);
+    const mossTone = this._cGrass.copy(P.moss).lerp(P.mossWarm, mossWarmth);
+    base.lerp(mossTone, mossPatch * 0.85);
+
+    const rockExposure = THREE.MathUtils.clamp(hardness * (0.25 + slope * 1.6), 0, 1);
+    const rockHeightT = THREE.MathUtils.clamp((h - 2) / 40, 0, 1);
+    const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, rockHeightT * 0.8).lerp(P.rockDark, (1 - rockHeightT) * 0.5);
+    rockTone.lerp(P.rockDark, THREE.MathUtils.clamp(wet * 1.3, 0, 1) * 0.45);
+    base.lerp(rockTone, rockExposure);
+    if (rockExposure > 0.15) {
+      const strataPhase = fi * FINE_CELL * 0.95 + h * 1.7;
+      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
+      base.lerp(P.rockDark, strata * 0.4 * rockExposure);
+      base.lerp(P.rockLight, (1 - strata) * 0.18 * rockExposure * rockHeightT);
+      const fineStrataPhase = fi * FINE_CELL * 3.4 + h * 2.3 + 1.4;
+      const fineStrata = Math.sin(fineStrataPhase) * 0.5 + 0.5;
+      base.lerp(P.rockDark, fineStrata * 0.16 * rockExposure);
+    }
+    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.78);
+
+    const wetT = THREE.MathUtils.clamp(wet, 0, 1);
+    base.lerp(P.mud, wetT * 0.85); // wet dirt/rock darkens toward mud - no wet-sand tone here
+
+    const distT = THREE.MathUtils.clamp(disturbance, 0, 1);
+    if (cavity > 0) base.lerp(P.turnedSandDug, distT * 0.8);
+    else base.lerp(P.turnedSand, distT * 0.75);
+    if (cavity > 0) base.multiplyScalar(1 - Math.min(1, cavity) * 0.5);
+    else base.multiplyScalar(1 - cavity * 0.24);
+
+    out.copy(base);
+  }
+
+  _colorAtLevel1(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
     const P = this._pal;
     const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
     const t = (fj * FINE_CELL) / SIZE;

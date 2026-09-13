@@ -83,14 +83,37 @@
     background: none; border: none; cursor: pointer; text-shadow: 0 1px 3px rgba(0,0,0,0.6);
   }
 
-  #resetBtn {
+  #resetBtn, #levelBtn {
     position: fixed; bottom: 20px; left: 22px; z-index: 10;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 11px;
     color: rgba(255,255,255,0.45); letter-spacing: 0.06em; text-transform: uppercase;
     background: none; border: none; cursor: pointer; text-shadow: 0 1px 3px rgba(0,0,0,0.6);
     padding: 0;
   }
+  #levelBtn { left: 140px; }
   body.touch #resetBtn { bottom: auto; top: 54px; left: 18px; }
+  body.touch #levelBtn { bottom: auto; top: 54px; left: 140px; }
+
+  #levelSelect {
+    position: fixed; inset: 0; z-index: 25; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 26px;
+    background: linear-gradient(180deg,#1b2a33,#0d1418);
+    color: #cfe3e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  #levelSelect .lsTitle {
+    font-family: Georgia, 'Times New Roman', serif; font-size: 26px; letter-spacing: 0.08em;
+    text-transform: uppercase; opacity: 0.92;
+  }
+  #levelSelect .lsSubtitle { font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.55; margin-top: -14px; }
+  #levelSelect .lsCards { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; max-width: 640px; padding: 0 20px; }
+  .lsCard {
+    width: 230px; text-align: left; cursor: pointer; padding: 18px 20px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.22); border-radius: 6px;
+    color: #cfe3e8; font-family: inherit; transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .lsCard:hover, .lsCard:focus-visible { background: rgba(255,255,255,0.13); border-color: rgba(255,255,255,0.5); outline: none; }
+  .lsCard .lsCardTitle { font-size: 16px; font-weight: 600; letter-spacing: 0.03em; margin-bottom: 6px; }
+  .lsCard .lsCardDesc { font-size: 12px; line-height: 1.5; opacity: 0.7; }
 
   /* Touch controls - shown only on touch-capable devices, see main.js */
   body:not(.touch) #touchUI { display: none; }
@@ -147,6 +170,21 @@
   <div class="bar"><i></i></div>
 </div>
 
+<div id="levelSelect">
+  <div class="lsTitle">Shoreline</div>
+  <div class="lsSubtitle">Choose a level</div>
+  <div class="lsCards">
+    <button class="lsCard" data-level="level1">
+      <div class="lsCardTitle">Mawgan Porth</div>
+      <div class="lsCardDesc">A coastal sandbox: dig and pile the beach, push rocks to redirect the stream, and watch the tide reshape the shore.</div>
+    </button>
+    <button class="lsCard" data-level="level2">
+      <div class="lsCardTitle">Highfall Gorge</div>
+      <div class="lsCardDesc">A steep mountain valley: a waterfall cascades down the gorge into a river you can dig, dam and redirect on its way out.</div>
+    </button>
+  </div>
+</div>
+
 <div id="hint"></div>
 <div id="reticle"></div>
 <div id="filmGrade"></div>
@@ -163,6 +201,7 @@
 <button id="sound">Sound: on</button>
 
 <button id="resetBtn">Reset beach</button>
+<button id="levelBtn">Change level</button>
 
 <div id="touchUI">
   <div id="digZone"></div>
@@ -188,6 +227,43 @@
   }
 }
 </script>
-<script type="module" src="./src/main.js?v=81"></script>
+<script>
+// Picks which level's code path (terrain.js's ACTIVE_LEVEL, set from
+// localStorage before main.js's own top-level code runs) is active, via a
+// simple level-select screen shown once up front - see main.js's own header
+// comment. Runs before the module script exists at all (appended dynamically
+// below) so an unchosen level never starts loading the game underneath it.
+(function () {
+  var params = new URLSearchParams(location.search);
+  var requested = params.get('level');
+  var stored = localStorage.getItem('shoreline_active_level');
+  var level = (requested === 'level1' || requested === 'level2') ? requested : stored;
+
+  function boot(id) {
+    localStorage.setItem('shoreline_active_level', id);
+    var s = document.createElement('script');
+    s.type = 'module';
+    s.src = './src/main.js?v=81';
+    document.body.appendChild(s);
+  }
+
+  if (level === 'level1' || level === 'level2') {
+    boot(level);
+  } else {
+    document.getElementById('loading').style.display = 'none';
+    var sel = document.getElementById('levelSelect');
+    sel.style.display = 'flex';
+    var btns = sel.querySelectorAll('[data-level]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function (e) {
+        var id = e.currentTarget.getAttribute('data-level');
+        sel.style.display = 'none';
+        document.getElementById('loading').style.display = '';
+        boot(id);
+      });
+    }
+  }
+})();
+</script>
 </body>
 </html>
