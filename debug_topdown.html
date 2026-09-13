@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>topdown debug</title>
+<style>html,body{margin:0;background:#222;} canvas{image-rendering:pixelated; margin:4px; display:inline-block; vertical-align:top;} </style>
+</head>
+<body>
+<canvas id="c" width="140" height="140" style="width:600px;height:600px;"></canvas>
+<canvas id="c2" width="140" height="140" style="width:600px;height:600px;"></canvas>
+<div id="info" style="color:#fff;font-family:monospace;white-space:pre;"></div>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { Terrain, GRID, SIZE, RENDER_SUBDIV } from './src/terrain.js?v=71';
+const t = new Terrain();
+function idx(i,j){return j*GRID+i;}
+
+// Canvas 1: raw sand/rock/sea classification (bypasses lighting AND material palette)
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const img = ctx.createImageData(GRID, GRID);
+for (let j=0;j<GRID;j++){
+  for (let i=0;i<GRID;i++){
+    const k = idx(i,j);
+    const h = t.bedrock[k];
+    const hard = t.hardness[k];
+    let r,g,b;
+    if (h < -0.3) { r=30;g=80;b=140; }
+    else if (hard > 0.5) { const v=1-hard; r=40+v*60; g=36+v*55; b=28+v*45; }
+    else { r=217;g=196;b=155; }
+    const px = idx(i,j);
+    img.data[px*4+0]=r; img.data[px*4+1]=g; img.data[px*4+2]=b; img.data[px*4+3]=255;
+  }
+}
+ctx.putImageData(img,0,0);
+
+// Canvas 2: actual _colorAt() material output, top-down, NO lighting applied -
+// exactly what the fine mesh's vertex colours are before the renderer's
+// sun/hemi/shadow pass touches them. wet/disturbance/cavity=0 (fresh terrain).
+const canvas2 = document.getElementById('c2');
+const ctx2 = canvas2.getContext('2d');
+const img2 = ctx2.createImageData(GRID, GRID);
+const outC = new THREE.Color();
+for (let j=0;j<GRID;j++){
+  for (let i=0;i<GRID;i++){
+    const k = idx(i,j);
+    const h = t.bedrock[k];
+    const hardness = t.hardness[k];
+    const hL = t.bedrock[idx(Math.max(0,i-1),j)], hR = t.bedrock[idx(Math.min(GRID-1,i+1),j)];
+    const hD = t.bedrock[idx(i,Math.max(0,j-1))], hU = t.bedrock[idx(i,Math.min(GRID-1,j+1))];
+    const slope = (Math.abs(hR-hL)+Math.abs(hU-hD)) / (4*0.82);
+    const fi = i * RENDER_SUBDIV, fj = j * RENDER_SUBDIV;
+    t._colorAt(fi, fj, h, slope, hardness, 0, 0, 0, outC);
+    const px = idx(i,j);
+    img2.data[px*4+0]=Math.round(outC.r*255); img2.data[px*4+1]=Math.round(outC.g*255); img2.data[px*4+2]=Math.round(outC.b*255); img2.data[px*4+3]=255;
+  }
+}
+ctx2.putImageData(img2,0,0);
+
+window.__terrainDebug = t;
+document.getElementById('info').textContent = `GRID=${GRID} SIZE=${SIZE.toFixed(1)}  left=classification  right=_colorAt (no lighting)`;
+</script>
+</body></html>

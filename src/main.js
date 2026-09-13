@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=63';
-import { WaterSim } from './water.js?v=63';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=63';
-import { scatterRocks } from './rocks.js?v=63';
-import { Player } from './player.js?v=63';
-import { AudioSystem } from './audio.js?v=63';
-import { Particles } from './particles.js?v=63';
-import { Debris } from './debris.js?v=63';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=71';
+import { WaterSim } from './water.js?v=71';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=71';
+import { scatterRocks } from './rocks.js?v=71';
+import { Player } from './player.js?v=71';
+import { AudioSystem } from './audio.js?v=71';
+import { Particles } from './particles.js?v=71';
+import { Debris } from './debris.js?v=71';
 
 // ---------- renderer / scene / camera ----------
 
@@ -43,8 +43,23 @@ window.addEventListener('resize', () => {
 // Hemi intensity brought down from 0.85 - that much flat ambient fill was
 // competing with the sun and softening every shadow/AO cue into a flat wash,
 // which is a big part of what read as "flat" to begin with.
-const hemi = new THREE.HemisphereLight(0xaad2ea, 0x776a45, 0.6);
+const hemi = new THREE.HemisphereLight(0xaad2ea, 0x776a45, 0.7);
 scene.add(hemi);
+
+// Fill light: a real Cornish coast (see the reference photos this pass was
+// re-graded against) is almost always shot under a bright, heavily overcast
+// sky - soft, near-omnidirectional light with no hard black shadows anywhere,
+// even in a cliff's own gullies. This engine's single hard sun + 0.6 hemi
+// wasn't enough fill for that: any cliff face angled away from the sun (most
+// of the north headland, whose exposed rock face points inland/away from
+// sunDir) fell to almost pure black - losing all of terrain.js's strata/
+// colour work entirely, not just darkening it. A second, dim, shadowless
+// directional light from roughly the opposite side stands in for that
+// scattered overcast skylight/bounce without adding a second hard shadow.
+const fill = new THREE.DirectionalLight(0xcfe3ea, 0.85);
+fill.position.set(-0.4, 0.6, -0.3);
+fill.castShadow = false;
+scene.add(fill);
 
 // Sun brought up correspondingly (hemi's fill dropped) and warmed slightly - a
 // warm key light against the cooler sky fill is what actually separates grass/
@@ -765,6 +780,7 @@ function animate() {
 
 window.__game = {
   player, camera, terrain, water, rocks, scene, updateShovel, debris,
+  renderer, hemi, sun, fill, // exposed for lighting/material debugging in the browser console
   setTouchDig: (v) => { touchDigHeld = v; },
   debug: () => ({
     camDist, camDistTarget, introTimer, clockElapsed: clock.elapsedTime,

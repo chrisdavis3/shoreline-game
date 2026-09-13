@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=63';
-import { Noise2D } from './noise.js?v=63';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=71';
+import { Noise2D } from './noise.js?v=71';
 
 const decoNoise = new Noise2D(555);
 
@@ -359,14 +359,35 @@ export function scatterProps(terrain) {
   for (let n = 0; n < cliffGrassCount * 6 && cgc < cliffGrassCount; n++) {
     const cx = Math.random() * SIZE, cz = Math.random() * SIZE;
     const y = terrain.sampleHeightBilinear(cx, cz);
-    if (y < 4.5) continue; // matches terrain.js's own clifftopGrass height threshold
+    // Same south/north asymmetry as terrain.js's own clifftopGrass and this
+    // file's buildSkirt: a flat 4.5/0.42 cutoff here meant the south hill's
+    // vertex-COLOUR was already grassed much lower (see terrain.js) but these
+    // actual 3D grass-blade instances still only appeared above the same old
+    // uniform threshold - so the south hill's lower slopes read as a flat
+    // green-painted surface with no real blade texture, while the colour and
+    // the geometry disagreed about how grassy it was. Bias both thresholds by
+    // the same rockAllow curve so the blades actually cover what the colour
+    // pass already promised.
+    const northT = THREE.MathUtils.clamp(cx / SIZE, 0, 1);
+    const northSmooth = northT * northT * (3 - 2 * northT);
+    const rockAllow = 0.22 + 0.78 * northSmooth;
+    const southGrassBoost = 1 - rockAllow;
+    const heightThresh = 4.5 - 3.2 * southGrassBoost;
+    // A real grassy hill (south end) is still fairly steep by nature - it's
+    // still a headland, just a rounded/grassed one, not gentle like a dune -
+    // so this needs a genuinely generous slope allowance there, not a token
+    // bump, or almost every candidate on the actual slope keeps failing the
+    // slope test and the hill ends up bladeless anyway regardless of the
+    // height threshold above.
+    const slopeMax = 0.42 + 0.75 * southGrassBoost;
+    if (y < heightThresh) continue;
     const eps = 0.6;
     const hx1 = terrain.sampleHeightBilinear(cx + eps, cz), hx0 = terrain.sampleHeightBilinear(cx - eps, cz);
     const hz1 = terrain.sampleHeightBilinear(cx, cz + eps), hz0 = terrain.sampleHeightBilinear(cx, cz - eps);
     const slope = (Math.abs(hx1 - hx0) + Math.abs(hz1 - hz0)) / (4 * eps);
-    if (slope > 0.42) continue; // too steep - bare cliff face, not turf
+    if (slope > slopeMax) continue; // too steep - bare cliff face, not turf
     const density = decoNoise.fbm(cx * 0.15 + 300, cz * 0.15 + 300, 3);
-    if (density < 0.25) continue;
+    if (density < 0.25 - 0.15 * southGrassBoost) continue;
     const clumpSize = 2 + Math.floor(Math.random() * 3);
     for (let c = 0; c < clumpSize && cgc < cliffGrassCount; c++) {
       const x = cx + (Math.random() - 0.5) * 0.6;
@@ -490,9 +511,14 @@ export function buildSkirt(terrain) {
   // Palette matched to terrain.js's own upgraded rock/grass tones so the real
   // (simulated) terrain and this decorative surround read as one continuous
   // material, not two different-looking rock types stitched together.
-  const rockDark = new THREE.Color('#15130f');
-  const rockMid = new THREE.Color('#4a4438');
-  const rockLight = new THREE.Color('#9c8f76');
+  // Re-graded against actual reference photos (not a text description) - real
+  // Mawgan Porth slate is a COOL charcoal/near-black, essentially no warm
+  // brown in it. Matches terrain.js's own re-graded palette so the simulated
+  // terrain and this decorative surround still read as one continuous
+  // material.
+  const rockDark = new THREE.Color('#121316');
+  const rockMid = new THREE.Color('#3c3f42');
+  const rockLight = new THREE.Color('#8b8d87');
   const grassPatch = new THREE.Color('#526b3a');
   const grassWarm = new THREE.Color('#8fa04a'); // warm, sun-bleached variant - see terrain.js's grassWarmth
   const farHill = new THREE.Color('#7f9296'); // distant hills, hazed by atmospheric perspective
@@ -538,6 +564,18 @@ export function buildSkirt(terrain) {
       }
       const outside = Math.max(dxOut, dzLandEff);
 
+      // The two real headlands are NOT symmetric (confirmed against an
+      // eye-level reference photo showing both in one frame): the south end
+      // (low x, Berryl's Point) is a smooth, rounded, mostly grassy hill;
+      // the north end (high x, Trenance Point, where the stream enters) is
+      // the genuinely jagged, fractured dark rock cliff. `rockJagged` fades
+      // the fractured-silhouette ridge noise (and, below, the exposed-rock
+      // strata/colour) down toward the south so that side reads as a rounded,
+      // grassy hillside instead of an equally shattered dark cliff. Computed
+      // once here so both the height rise and the colour pass below share it.
+      const northT = THREE.MathUtils.clamp(x / SIZE, 0, 1);
+      const rockJagged = 0.3 + 0.7 * (northT * northT * (3 - 2 * northT));
+
       let y;
       if (outside <= 0 && dzSea <= 0) {
         // directly under the real (simulated) terrain - hide it away entirely
@@ -577,7 +615,7 @@ export function buildSkirt(terrain) {
           THREE.MathUtils.clamp(x, 1, SIZE - 1),
           THREE.MathUtils.clamp(z, 1, SIZE - 1),
         );
-        y = edgeY + rise * (30 + n * 14) + bigRock * 22 * nearRise + fineRock * 7 * nearRise;
+        y = edgeY + rise * (30 + n * 14) + bigRock * 22 * nearRise * rockJagged + fineRock * 7 * nearRise * rockJagged;
         if (dzSea > 0) y -= dzSea * 0.6; // taper down toward the sea horizon at the far corners
       }
       positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
@@ -588,19 +626,46 @@ export function buildSkirt(terrain) {
       // already >50% blended toward pale grey-blue, washing out all the color
       // and shadow contrast that makes rock read as rock.
       const distT = THREE.MathUtils.clamp((outside - 60) / (SIZE * 2.2), 0, 1);
-      // Diagonal strata, same technique as the real cliff face: mixing x into the
-      // phase alongside height tilts the bands into sloped strata instead of
-      // horizontal rings.
-      const strataPhase = x * 0.3 + y * 2.4;
+      // Fine, closely-spaced diagonal strata - real slate here is thin, tightly
+      // packed layering (like a stack of paper), not a handful of fat
+      // alternating blobs - the old 0.3/2.4 frequency read as the latter.
+      // Mixing x into the phase alongside height still tilts the bands into
+      // sloped strata instead of horizontal rings.
+      //
+      // CAUGHT AND FIXED (same bug as terrain.js's _colorAt, worse here since
+      // this mesh samples every ~1.5m instead of ~0.2m): a large HEIGHT
+      // coefficient aliases into a regular checkerboard/moire on any
+      // near-vertical rise, because y can change many metres between adjacent
+      // samples there while x barely moves - a phase term that multiplies raw
+      // height by anything sizeable completes several sine cycles between
+      // samples, which is undersampling, not banding. Keep y's coefficient
+      // small (a gentle diagonal tilt only) and let x - which always changes
+      // smoothly and slowly per sample regardless of slope - carry the actual
+      // fine-band frequency.
+      const strataPhase = x * 0.85 + y * 1.4;
       const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-      const fineStrata = Math.sin(strataPhase * 2.6 + 1.1) * 0.5 + 0.5;
+      const fineStrataPhase = x * 2.9 + y * 1.9 + 1.1;
+      const fineStrata = Math.sin(fineStrataPhase) * 0.5 + 0.5;
       const heightT = THREE.MathUtils.clamp(y / 55, 0, 1);
+      // Same south/north rock-vs-grass bias as the ridge-noise silhouette
+      // above and terrain.js's own clifftop grass - south hill shows far less
+      // bare rock strata and grasses over far more of its slope.
+      const rockAllow = 0.28 + 0.72 * rockJagged;
+      const southGrassBoost = 1 - rockAllow;
       tmpC.copy(rockMid).lerp(rockLight, heightT * 0.7);
-      tmpC.lerp(rockDark, strata * 0.34 + fineStrata * 0.15);
+      tmpC.lerp(rockDark, (strata * 0.34 + fineStrata * 0.15) * rockAllow);
       // Alternate bands lighten toward the drier, higher rock tone (matches the
       // same real-strata technique in terrain.js's _colorAt) instead of every band
       // only ever darkening toward black - reads as actual banded rock, not a smudge.
       tmpC.lerp(rockLight, (1 - strata) * 0.15 * heightT);
+      // The south hill's default surface (before the patchy grass overlay below)
+      // was still this same bare rock tone everywhere the patch noise hadn't
+      // happened to fire - reading as a grey rock wall with a few green speckles
+      // rather than a grassy hillside with occasional bare rock. A real turf-
+      // covered hill is grass-covered BY DEFAULT, with rock the exception, not
+      // the other way round - so give the base tone itself a continuous turf
+      // undercoat proportional to southGrassBoost, independent of the patch mask.
+      tmpC.lerp(grassPatch, southGrassBoost * 0.6);
       // Grass in noise-patches (not a uniform cap) atop the rise. The onset used
       // to be y>34 - given typical rise commonly only reaches y~20-30 short of
       // the very tallest peaks, that meant almost no visible cliff ever actually
@@ -608,11 +673,14 @@ export function buildSkirt(terrain) {
       // highest points, not just their summits. Mixed warm/cool per its own
       // noise field, same technique as the real terrain's clifftop grass, so
       // this decorative surround doesn't read as a flatter single-tone green
-      // next to the real, richer-coloured terrain right beside it.
+      // next to the real, richer-coloured terrain right beside it. The south
+      // hill's onset height/density is boosted so it reads as a grassy hill
+      // with only a rock outcrop at its base, not a bare cliff with a green cap.
       const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
       const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
-      const grassAmount = THREE.MathUtils.clamp((y - 16) / 12, 0, 1)
-        * THREE.MathUtils.clamp((grassPatchNoise - 0.05) * 1.8, 0, 1);
+      const grassOnsetY = 16 - 13 * southGrassBoost;
+      const grassAmount = THREE.MathUtils.clamp((y - grassOnsetY) / 12, 0, 1)
+        * THREE.MathUtils.clamp((grassPatchNoise - 0.05 + southGrassBoost * 0.5) * 1.8, 0, 1);
       tmpGrass.copy(grassPatch).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
       tmpC.lerp(tmpGrass, grassAmount * 0.92);
       // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.

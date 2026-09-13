@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=63';
+import { Noise2D } from './noise.js?v=71';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -48,65 +48,55 @@ function streamCenterX(z) {
 
 // The coastline's t-threshold (0..1, inland->sea) as a function of column i.
 //
-// CORRECTED (this was wrong for a whole prior session): the previous version
-// of this array was traced from OSM way 399625654 ("Dunes", natural=beach) -
-// but that way turned out to be a small, narrow, unrelated dune-ridge
-// feature well inland of and much smaller than Mawgan Porth's actual wide
-// sandy bay (confirmed by plotting way 399625654 next to the real
-// natural=coastline way 62688995: they aren't even the same shape or scale).
-// Using it explains why the beach looked nothing like the reference map no
-// matter how the other constants were tuned - the source data was for the
-// wrong feature.
+// CORRECTED AGAIN (this went through two wrong versions before this one - see
+// git history/TESTING_FEEDBACK.md): first traced from the wrong OSM way
+// entirely, then from a "real" OSM way that turned out to have a dramatic
+// ~0.42-deep, sharply-peaked bulge in the middle of the bay - which rendered,
+// verified via a raw top-down data image (bypassing 3D lighting entirely),
+// as an unmistakable sharp mountain-shaped wedge of sea jutting into the
+// sand, not a coastline. That matches the user's own screenshot complaint
+// exactly (a pointed wedge where sea meets sand) - so that data, however it
+// was traced, was wrong for this purpose regardless of source.
 //
-// This version is traced from the REAL coastline instead: Overpass way
-// 62688995 (natural=coastline, OS OpenData StreetView), restricted to the
-// stretch that actually bounds the sandy bay (between the two flanking
-// rocky headlands, verified against the river mouth above and against the
-// aerial reference photo). For each of the 140 columns, the coastline's
-// perpendicular distance from the straight baseline connecting the bay's
-// two ends (i.e. how far it bulges seaward past a straight mouth-to-mouth
-// line, not raw longitude - using raw longitude here is what produced a
-// misleading monotonic ramp during verification, since this stretch of
-// coast itself runs at a diagonal, not purely north-south) was sampled at
-// 140 even arc-length steps, lightly smoothed (7-sample moving average) to
-// keep the per-column slope gentle, then rescaled to a 0.40-0.82 depth
-// range. i=0 is the southern end of the real bay, i=GRID-1 the northern end
-// (unchanged convention - only the traced shape and the stream's side were
-// wrong before, not this axis labelling). This is also where the specific
-// real asymmetry lives: a real rocky point cuts into the sand around
-// i=20-29 (the dip below), on the southern third - the two ends of this
-// beach are not mirror images of each other, and this notch is why.
-const REAL_COAST_T = [
-  0.4862, 0.4922, 0.4986, 0.5044, 0.5170, 0.5285, 0.5360, 0.5400, 0.5418, 0.5412,
-  0.5391, 0.5357, 0.5308, 0.5262, 0.5218, 0.5167, 0.5103, 0.5025, 0.4935, 0.4834,
-  0.4730, 0.4623, 0.4512, 0.4401, 0.4292, 0.4188, 0.4102, 0.4039, 0.4004, 0.4000,
-  0.4025, 0.4074, 0.4137, 0.4215, 0.4307, 0.4404, 0.4510, 0.4607, 0.4704, 0.4808,
-  0.4913, 0.5017, 0.5104, 0.5191, 0.5288, 0.5376, 0.5456, 0.5536, 0.5620, 0.5726,
-  0.5821, 0.5921, 0.6031, 0.6148, 0.6257, 0.6341, 0.6419, 0.6504, 0.6571, 0.6639,
-  0.6701, 0.6754, 0.6826, 0.6896, 0.6935, 0.6993, 0.7050, 0.7114, 0.7191, 0.7265,
-  0.7338, 0.7441, 0.7539, 0.7637, 0.7727, 0.7804, 0.7877, 0.7929, 0.7951, 0.7968,
-  0.7989, 0.8011, 0.8039, 0.8066, 0.8103, 0.8155, 0.8193, 0.8200, 0.8187, 0.8146,
-  0.8084, 0.8007, 0.7921, 0.7820, 0.7713, 0.7591, 0.7476, 0.7392, 0.7343, 0.7306,
-  0.7268, 0.7244, 0.7257, 0.7286, 0.7290, 0.7265, 0.7239, 0.7250, 0.7253, 0.7238,
-  0.7202, 0.7168, 0.7142, 0.7100, 0.7025, 0.6945, 0.6857, 0.6774, 0.6708, 0.6640,
-  0.6570, 0.6498, 0.6431, 0.6356, 0.6273, 0.6161, 0.6031, 0.5899, 0.5765, 0.5631,
-  0.5501, 0.5369, 0.5238, 0.5105, 0.4971, 0.4858, 0.4773, 0.4713, 0.4657, 0.4611,
-];
+// This version is built from actual reference photos instead of a hand-traced
+// OSM way: a drone aerial of the whole bay (oblique) and a ground-level shot
+// from the dune line showing both headlands in one frame. Both show the same
+// thing - a wide, gently-curving crescent bay with an almost STRAIGHT
+// sea-facing edge (waves roll in close to parallel to the dune line - there's
+// no dramatic bulge or pinch anywhere along it). The actual bay-mouth-to-mouth
+// TAPER (narrow at the dune line, fanning out toward the sea) is already
+// handled entirely by insetCells()/warpX() below; this function only needs to
+// supply a gentle, mostly-flat crescent with a slight seaward bulge at the
+// centre and small natural irregularity - not a large per-column swing.
+const coastRoughNoise = new Noise2D(3721);
 
-export function coastT(i) {
-  return REAL_COAST_T[THREE.MathUtils.clamp(Math.round(i), 0, GRID - 1)];
+function coastTContinuous(ci) {
+  const u = THREE.MathUtils.clamp(ci, 0, GRID - 1) / (GRID - 1);
+  const crescent = Math.sin(Math.PI * u); // 0 at both headlands, 1 at the bay's centre
+  const bulge = Math.pow(crescent, 1.3);
+  // 0.66 right off each headland's base (still a real sandy apron there, per
+  // the eye-level photo - sand runs right up to both hills, it doesn't pinch
+  // to nothing) rising gently to 0.76 at the bay's centre - a ~0.10 total
+  // range, an order of magnitude gentler than the old traced data, matching
+  // the reference photos' near-straight waterline.
+  const base = 0.66 + 0.10 * bulge;
+  // Small, low-frequency organic irregularity so the edge doesn't read as a
+  // mathematically perfect sine - real coastlines wobble a little - but kept
+  // an order of magnitude smaller than the swing itself so it can never
+  // reintroduce a wedge/pinch.
+  const rough = coastRoughNoise.fbm(ci * 0.035, 40, 3) * 0.018;
+  return base + rough;
 }
 
-// Smoothly interpolated coastT for use where the caller needs a continuous
-// curve across columns (avoids a staircase every integer i) - coastT() itself
-// intentionally rounds, since most callers index one specific simulation
-// column, but insetCells() below evaluates at continuous fractional i (fine
-// render-mesh spacing), so it needs the in-between values too.
+export function coastT(i) {
+  return coastTContinuous(Math.round(THREE.MathUtils.clamp(i, 0, GRID - 1)));
+}
+
+// Continuous (non-staircased) version for callers evaluating at fractional i
+// (fine render-mesh spacing, e.g. insetCells() below) - coastT() itself rounds
+// since most callers index one specific simulation column.
 function coastTSmooth(i) {
-  const ci = THREE.MathUtils.clamp(i, 0, GRID - 1);
-  const i0 = Math.floor(ci), i1 = Math.min(GRID - 1, i0 + 1);
-  const f = ci - i0;
-  return REAL_COAST_T[i0] + (REAL_COAST_T[i1] - REAL_COAST_T[i0]) * f;
+  return coastTContinuous(THREE.MathUtils.clamp(i, 0, GRID - 1));
 }
 
 const edgeRoughNoise = new Noise2D(2718);
@@ -334,9 +324,15 @@ export class Terrain {
       grass: new THREE.Color('#5f7a45'),            // cool, richer coastal-turf green (was flat/desaturated)
       grassWarm: new THREE.Color('#96a04c'),        // warm, sun-bleached golden-green - real turf is never one flat green
       dryGrass: new THREE.Color('#a89860'),
-      rockDark: new THREE.Color('#15130f'),         // near-black wet slate, not a flat brown-grey
-      rockMid: new THREE.Color('#4a4438'),
-      rockLight: new THREE.Color('#9c8f76'),        // lighter, drier rock higher up the cliff
+      // Re-graded against actual reference photos of these cliffs (not a text
+      // description) - the real rock is a COOL charcoal/near-black slate with
+      // essentially no warm brown in it; the old rockMid/rockLight here (a
+      // warm khaki-brown and a warm tan) were a real, specific mismatch, not a
+      // subjective quibble - every rock surface in the photos reads grey-to-
+      // black, only lightening toward a cool pale grey when dry, never tan.
+      rockDark: new THREE.Color('#121316'),         // near-black wet slate, cool not warm
+      rockMid: new THREE.Color('#3c3f42'),          // cool charcoal, not warm khaki-brown
+      rockLight: new THREE.Color('#8b8d87'),        // cool pale grey, drier rock higher up the cliff
       turnedSand: new THREE.Color('#7c6142'),      // piled/disturbed rim - lighter, "just turned"
       turnedSandDug: new THREE.Color('#4a3720'),   // freshly dug basin - darker, damp-looking
     };
@@ -508,9 +504,23 @@ export class Terrain {
       const ci = cx / CELL;
       const t = z / SIZE;
       const width = 2.4 + 2.4 * t; // widens into a natural mouth as it nears the sea
+      // Fade the carve out once this row is already past ITS OWN column's real
+      // coastline (t beyond coastT(i)) - found via the raw top-down data render
+      // (bypassing 3D lighting) as the exact source of a sharp, single-column
+      // "spike" of full-depth sea poking into the sand right at the creek mouth:
+      // the sea-depth blend above already carries every column below the
+      // -0.3 "deep sea" cutoff a few cells past its own coastline, so carving
+      // another 1.7m off a spot that's already "sea" punched a visibly deeper,
+      // narrower notch there than anywhere else along the same waterline - a
+      // real geometric artifact, not merely a symptom of the water shader (the
+      // user's reported wedge could well have BOTH causes; this is the terrain
+      // half). Only fades past this column's coastline - the actual channel bed
+      // everywhere upstream of it (dune line to coastline) is untouched, so the
+      // simulated creek's flow/erosion still sees the same carved bed it always did.
       for (let i = 0; i < GRID; i++) {
+        const carveFade = 1 - THREE.MathUtils.clamp((t - coastT(i)) / 0.05, 0, 1);
         const d = Math.abs(i - ci);
-        const carve = Math.exp(-Math.pow(d / width, 2)) * 1.7;
+        const carve = Math.exp(-Math.pow(d / width, 2)) * 1.7 * carveFade;
         const k = idx(i, j);
         this.bedrock[k] -= carve;
         this.hardness[k] *= Math.max(0, 1 - carve * 1.5); // channel bed is soft
@@ -661,12 +671,31 @@ export class Terrain {
     const base = this._cBase.copy(P.sand).lerp(grassTone, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
     base.lerp(P.dryGrass, 0.15 * Math.max(0, 1 - t * 3));
 
+    // The two headlands are NOT symmetric in reality (confirmed against an
+    // eye-level reference photo showing both in one frame): the south end
+    // (i=0, "Berryl's Point") is a smooth, rounded, mostly GRASSY hill with
+    // only a small rock outcrop right at its base near the water; the north
+    // end (i=GRID-1, "Trenance Point", where the stream enters) is the
+    // genuinely dark, jagged, fractured rock cliff. The hardness field itself
+    // (headland + outcrop + slope-exposure, all baked together in _generate())
+    // stays untouched here - that field also feeds water.js's erosion/flux -
+    // this only biases how much of that hardness actually SHOWS as bare rock
+    // vs. how far grass is allowed to creep down the slope, purely a display
+    // decision. rockAllow: low near i=0 (most would-be rock repainted as
+    // grass below), 1.0 near i=GRID-1 (full rock, unchanged).
+    const northT = THREE.MathUtils.clamp(fi / RENDER_SUBDIV / (GRID - 1), 0, 1);
+    const northSmooth = northT * northT * (3 - 2 * northT);
+    const rockAllow = 0.22 + 0.78 * northSmooth;
+    const southGrassBoost = 1 - rockAllow; // how much extra grass-friendliness the south hill gets
+
     const grassPatch = THREE.MathUtils.clamp((n1.fbm(fx * 0.15 + 300, fz * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
-    const clifftopGrass = THREE.MathUtils.clamp((h - 4.5) / 3.5, 0, 1)
-      * THREE.MathUtils.clamp(1 - slope * 2.6, 0, 1) * grassPatch;
+    const clifftopHeightThresh = 4.5 - 3.2 * southGrassBoost; // grass starts much lower up the south hill
+    const clifftopSlopeTol = 2.6 - 1.9 * southGrassBoost;     // and tolerates a steeper slope there too
+    const clifftopGrass = THREE.MathUtils.clamp((h - clifftopHeightThresh) / 3.5, 0, 1)
+      * THREE.MathUtils.clamp(1 - slope * clifftopSlopeTol, 0, 1) * grassPatch;
     base.lerp(grassTone, clifftopGrass * 0.9);
 
-    const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1);
+    const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1) * rockAllow;
     const rockHeightT = THREE.MathUtils.clamp((h - 2) / 9, 0, 1);
     const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, rockHeightT * 0.8).lerp(P.rockDark, (1 - rockHeightT) * 0.5);
     // Rock exposed low down, where `wet` (the water sim's own moisture field) runs
@@ -674,20 +703,43 @@ export class Terrain {
     // the dry rock higher up the cliff face.
     rockTone.lerp(P.rockDark, THREE.MathUtils.clamp(wet * 1.3, 0, 1) * 0.45);
     base.lerp(rockTone, rockExposure);
-    if (rockExposure > 0.2) {
-      const strataPhase = fi * FINE_CELL * 0.32 + h * 2.6;
+    if (rockExposure > 0.15) {
+      // Fine, closely-spaced diagonal strata - real sedimentary slate here reads
+      // as thin, tightly-packed layering (like a stack of paper), not big,
+      // widely-spaced alternating blobs - the old 0.32/2.6 frequency was low
+      // enough to read as a handful of fat bands per cliff face rather than
+      // dozens of thin ones, a real and specific mismatch against the photos.
+      //
+      // CAUGHT AND FIXED (verified with shadows forced off, so it wasn't
+      // shadow acne): pushing the HEIGHT term's coefficient up to match (7.5,
+      // scaling with x's 0.95) aliased into an ugly regular checkerboard on
+      // any near-vertical cliff face - a steep slope can change many metres of
+      // height over one ~0.2m fine-mesh vertex step, so a phase term that
+      // multiplies raw height by anything large enough to matter completes
+      // several full sine cycles between adjacent vertices, which is
+      // undersampling/moire, not banding. The x term alone (well resolved,
+      // since x changes slowly and smoothly per vertex regardless of slope)
+      // already gives the fine, closely-spaced look; height's coefficient is
+      // kept small here so it only adds a gentle diagonal tilt, never enough
+      // cycles-per-vertex to alias even on a sheer face.
+      const strataPhase = fi * FINE_CELL * 0.95 + h * 1.7;
       const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-      base.lerp(P.rockDark, strata * 0.36 * rockExposure);
+      base.lerp(P.rockDark, strata * 0.4 * rockExposure);
       // Alternate bands lighten toward the dry, higher-up rock tone instead of
       // every band only ever darkening - real sedimentary strata reads as
       // alternating light/dark banding, not a one-directional smudge. Gated by
       // rockHeightT so this light band only shows through on the drier rock
       // higher up; wet rock near the waterline stays uniformly dark.
-      base.lerp(P.rockLight, (1 - strata) * 0.16 * rockExposure * rockHeightT);
-      const fineStrata = Math.sin(strataPhase * 2.7 + 1.4) * 0.5 + 0.5;
+      base.lerp(P.rockLight, (1 - strata) * 0.18 * rockExposure * rockHeightT);
+      // The fine secondary layer needs its OWN higher x-frequency, not the
+      // whole phase (x term AND height term together) multiplied up - doing
+      // that to the height term is exactly what caused the aliasing above,
+      // just at 3.4x the severity.
+      const fineStrataPhase = fi * FINE_CELL * 3.4 + h * 2.3 + 1.4;
+      const fineStrata = Math.sin(fineStrataPhase) * 0.5 + 0.5;
       base.lerp(P.rockDark, fineStrata * 0.16 * rockExposure);
     }
-    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.78);
+    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.78 * rockAllow);
 
     const wetT = THREE.MathUtils.clamp(wet, 0, 1);
     base.lerp(P.wetSand, wetT * 0.85);
