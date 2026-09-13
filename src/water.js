@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=71';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=72';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -330,8 +330,18 @@ export class WaterSim {
           float along = dot(vWorldPos.xz, dir);
           float across = dot(vWorldPos.xz, vec2(-dir.y, dir.x));
           float streakSpeed = 2.2 + min(flowMag, 3.0) * 3.2;
-          float streak = sin(along * 0.8 - uTime * streakSpeed) * 0.5 + 0.5;
-          streak *= 0.65 + 0.35 * sin(across * 1.6 + uTime * 0.6);
+          // A pure sin(along) gave perfectly even, parallel, barcode-spaced lines -
+          // real current lines break, merge, taper and vary in width, they never
+          // read as a clean repeating pattern. Warp the along-flow coordinate with
+          // noise before scrolling it (so lines aren't dead straight either), then
+          // build the streak itself from two independently-scaled, independently-
+          // drifting noise layers instead of a sine wave - thresholding noise gives
+          // organic blob/streak shapes with irregular length and spacing for free.
+          float warpN = valueNoise(vec2(along * 0.05, across * 0.08) + uTime * 0.045);
+          float alongWarped = along + (warpN - 0.5) * 5.0;
+          float streakA = valueNoise(vec2(alongWarped * 0.32, across * 0.46) - vec2(uTime * streakSpeed * 0.13, 0.0));
+          float streakB = valueNoise(vec2(alongWarped * 0.85 + 50.0, across * 1.2 + 50.0) - vec2(uTime * streakSpeed * 0.21, 0.0));
+          float streak = clamp(streakA * 0.6 + streakB * 0.55, 0.0, 1.0);
           // The sim's flow-transfer scheme has real per-cell numerical noise in
           // wide/still water (see water.js's own comments on checkerboard
           // oscillation) - it was always there, just inaudible under the old,
