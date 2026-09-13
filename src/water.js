@@ -3,7 +3,7 @@ import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=98';
+} from './terrain.js?v=100';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill

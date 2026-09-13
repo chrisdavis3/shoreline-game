@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=98';
+import { Noise2D } from './noise.js?v=100';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -16,7 +16,7 @@ import { Noise2D } from './noise.js?v=98';
 // height array (old falls position, no lake) was overwriting the new
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
-export const TERRAIN_VERSION = 6;
+export const TERRAIN_VERSION = 7;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)
@@ -1053,6 +1053,28 @@ export class Terrain {
         const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];
         const slope = (Math.abs(hR - hL) + Math.abs(hU - hD)) / (4 * CELL);
         this.hardness[k] = Math.max(this.hardness[k], Math.min(1, slope * 1.2));
+      }
+    }
+
+    // A few passes of light neighbour-averaging on the side-ramp area only -
+    // well clear of the river/falls/steps at the centreline, which stay
+    // exactly as authored (a real waterfall/step edge SHOULD be sharp).
+    // Several of the blend formulas above (sideRampH's own blend width,
+    // wallRise, the terrace/ramp handoff) still left small local seams where
+    // they meet - confirmed live as vehicles tilting hard and stalling on
+    // ground that was supposed to read as a gentle, driveable slope. Smoothed
+    // away in one general pass rather than chasing each seam individually.
+    for (let pass = 0; pass < 25; pass++) {
+      const src = this.bedrock.slice();
+      for (let j = 1; j < GRID - 1; j++) {
+        const z = j * CELL;
+        if (z <= L2_T_FALL0 * SIZE) continue; // flat plateau/lake - nothing to smooth
+        const ci = streamCenterXLevel2(z) / CELL;
+        for (let i = 1; i < GRID - 1; i++) {
+          if (Math.abs(i - ci) < 13) continue; // leave the river/falls/steps untouched
+          const k = idx(i, j);
+          this.bedrock[k] = (src[k] + src[idx(i - 1, j)] + src[idx(i + 1, j)] + src[idx(i, j - 1)] + src[idx(i, j + 1)]) / 5;
+        }
       }
     }
 
