@@ -1,13 +1,14 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=80';
-import { WaterSim } from './water.js?v=80';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=80';
-import { scatterRocks, Rock } from './rocks.js?v=80';
-import { Player } from './player.js?v=80';
-import { AudioSystem } from './audio.js?v=80';
-import { Particles } from './particles.js?v=80';
-import { Debris } from './debris.js?v=80';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=80';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=81';
+import { WaterSim } from './water.js?v=81';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=81';
+import { scatterRocks, Rock } from './rocks.js?v=81';
+import { Player } from './player.js?v=81';
+import { AudioSystem } from './audio.js?v=81';
+import { Particles } from './particles.js?v=81';
+import { Debris } from './debris.js?v=81';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=81';
+import { Bulldozer, Excavator } from './vehicles.js?v=81';
 
 // Bumped alongside every ?v=N cache-bust across the project (see version.txt,
 // fetched below) - mobile Safari in particular can keep an old tab's JS
@@ -17,7 +18,7 @@ import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 80;
+const APP_VERSION = 81;
 
 // ---------- renderer / scene / camera ----------
 
@@ -202,6 +203,65 @@ scene.add(buildVillage(terrain));
 const props = scatterProps(terrain);
 scene.add(props);
 
+// ---------- vehicles ----------
+
+// A bulldozer and an excavator, parked for the player to walk up to, get in,
+// and drive - see vehicles.js for the actual driving/digging model. Placement
+// here is deliberately the ONLY Level-1-specific thing about them: vehicles.js
+// itself never reads this level's coordinates or coastline shape, so dropping
+// them into the Level 2 world later is just a matter of calling createVehicle
+// with different spawn coordinates, not touching vehicles.js at all.
+function createVehicle(type, x, z, heading, terrainRef) {
+  const v = type === 'excavator' ? new Excavator(x, z, heading, terrainRef) : new Bulldozer(x, z, heading, terrainRef);
+  scene.add(v.mesh);
+  return v;
+}
+
+// Finds a flat, unblocked, stream-clear spot for each vehicle - the same kind
+// of candidate-search buildVillage()/scatterRocks() already use, rather than
+// a bare hardcoded coordinate, so a future terrain tweak here can't strand a
+// vehicle half-buried or floating. Confined to a clearing east of the village
+// (between the houses and the stream) so it reads as a small "construction
+// yard" rather than being scattered across the whole beach.
+function placeVehicles(terrainRef) {
+  const specs = [
+    { type: 'bulldozer', heading: Math.PI * 0.12 },
+    { type: 'excavator', heading: -Math.PI * 0.22 },
+  ];
+  const chosen = [];
+  for (const spec of specs) {
+    let x = SIZE * 0.72, z = SIZE * 0.15; // fallback - only used if every attempt below fails
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const cx = SIZE * 0.66 + Math.random() * SIZE * 0.12;
+      const cz = SIZE * 0.10 + Math.random() * SIZE * 0.11;
+      if (Math.abs(cx - streamCenterX(cz)) < 14) continue; // stay well clear of the stream corridor
+      if (terrainRef.blocked[idx(Math.round(cx / CELL), Math.round(cz / CELL))]) continue;
+      const hC = terrainRef.sampleHeightBilinear(cx, cz);
+      const hL = terrainRef.sampleHeightBilinear(cx - 1.6, cz);
+      const hR = terrainRef.sampleHeightBilinear(cx + 1.6, cz);
+      const hF = terrainRef.sampleHeightBilinear(cx, cz - 1.6);
+      const hB = terrainRef.sampleHeightBilinear(cx, cz + 1.6);
+      const spread = Math.max(hC, hL, hR, hF, hB) - Math.min(hC, hL, hR, hF, hB);
+      if (spread > 0.7) continue;
+      let tooClose = false;
+      for (const p of chosen) { if (Math.hypot(p.x - cx, p.z - cz) < 6) { tooClose = true; break; } }
+      if (tooClose) continue;
+      x = cx; z = cz;
+      break;
+    }
+    chosen.push({ x, z });
+  }
+  return specs.map((spec, i) => createVehicle(spec.type, chosen[i].x, chosen[i].z, spec.heading, terrainRef));
+}
+
+const vehicles = savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
+  ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
+  : placeVehicles(terrain);
+
+// The single vehicle the player currently occupies, or null when on foot.
+let drivingVehicle = null;
+let savedCamDistTarget = null;
+
 // ---------- input ----------
 
 const keys = new Set();
@@ -223,6 +283,9 @@ canvas.addEventListener('pointerdown', (e) => {
   ensureAudioStarted();
   if (e.button === 0) mouse.left = true;
   if (e.button === 2) mouse.right = true;
+  // Excavator dig is a single triggered animation, not a held drain - fire it
+  // once on the click, not continuously while mouse.left stays true.
+  if (e.button === 0 && drivingVehicle && drivingVehicle.type === 'excavator') drivingVehicle.requestDig();
 });
 window.addEventListener('pointerup', (e) => {
   if (e.button === 0) mouse.left = false;
@@ -330,12 +393,20 @@ function bindHoldButton(id, onDown, onUp) {
   el.addEventListener('pointerleave', onUp);
   return el;
 }
+const digBtnEl = document.getElementById('digBtn');
+const smoothBtnEl = document.getElementById('smoothBtn');
 bindHoldButton('digBtn',
-  () => { touchDigHeld = true; document.getElementById('digBtn').classList.add('active'); },
-  () => { touchDigHeld = false; document.getElementById('digBtn').classList.remove('active'); });
+  // While driving the excavator, this same button triggers one full dig
+  // cycle instead of the hand shovel's hold-to-scoop - a single tap, not a
+  // hold, since the dig is a whole scripted animation, not a drained ramp.
+  () => {
+    if (drivingVehicle && drivingVehicle.type === 'excavator') { drivingVehicle.requestDig(); return; }
+    touchDigHeld = true; digBtnEl.classList.add('active');
+  },
+  () => { touchDigHeld = false; digBtnEl.classList.remove('active'); });
 bindHoldButton('smoothBtn',
-  () => { touchSmoothHeld = true; document.getElementById('smoothBtn').classList.add('active'); },
-  () => { touchSmoothHeld = false; document.getElementById('smoothBtn').classList.remove('active'); });
+  () => { touchSmoothHeld = true; smoothBtnEl.classList.add('active'); },
+  () => { touchSmoothHeld = false; smoothBtnEl.classList.remove('active'); });
 
 const interactBtn = document.getElementById('interactBtn');
 interactBtn.addEventListener('pointerdown', (e) => {
@@ -390,12 +461,17 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: true });
 
 function updateCamera(dt) {
+  // Whatever the player currently controls - on foot, or a vehicle they've
+  // driven into - exposes the same { pos, facing } shape (see vehicles.js),
+  // so the camera doesn't need to know or care which one it's following.
+  const camSubject = drivingVehicle || player;
+
   if (keys.has('KeyQ')) camYaw += dt * 1.4;
   if (keys.has('BracketLeft')) camYaw += dt * 1.4;
   if (keys.has('BracketRight')) camYaw -= dt * 1.4;
 
-  // gentle auto-orientation behind the player so the view mostly self-corrects
-  const desired = player.facing + Math.PI;
+  // gentle auto-orientation behind the subject so the view mostly self-corrects
+  const desired = camSubject.facing + Math.PI;
   let diff = desired - camYaw;
   diff = Math.atan2(Math.sin(diff), Math.cos(diff));
   camYaw += diff * Math.min(1, dt * 0.35);
@@ -408,7 +484,7 @@ function updateCamera(dt) {
     camDist += (camDistTarget - camDist) * Math.min(1, dt * 4);
   }
 
-  const target = player.pos.clone().add(camLookOffset);
+  const target = camSubject.pos.clone().add(camLookOffset);
   const offset = new THREE.Vector3(
     Math.sin(camYaw) * Math.cos(camPitch) * camDist,
     Math.sin(camPitch) * camDist,
@@ -418,8 +494,8 @@ function updateCamera(dt) {
   camera.position.lerp(desiredPos, Math.min(1, dt * 6));
   camera.lookAt(target);
 
-  sun.position.copy(player.pos).add(sunDir.clone().multiplyScalar(30));
-  sun.target.position.copy(player.pos);
+  sun.position.copy(camSubject.pos).add(sunDir.clone().multiplyScalar(30));
+  sun.target.position.copy(camSubject.pos);
 }
 
 // ---------- movement vector ----------
@@ -495,6 +571,11 @@ function tryInteract() {
   if (now - lastInteractAt < 350) return;
   lastInteractAt = now;
 
+  if (drivingVehicle) {
+    exitVehicle();
+    return;
+  }
+
   if (player.carriedRock) {
     const p = player.aheadPoint(0.9);
     player.carriedRock.putDown(
@@ -506,6 +587,8 @@ function tryInteract() {
     hints.trigger('putDown');
     player.carriedRock = null;
     player.state = 'idle';
+  } else if (findNearbyVehicle()) {
+    enterVehicle(findNearbyVehicle()); // second call is cheap - just 1-2 vehicles
   } else {
     const target = findNearbySmallRock();
     if (target) {
@@ -686,6 +769,102 @@ function updateRockGravity(dt) {
   }
 }
 
+// ---------- vehicle interaction ----------
+
+// Same idea as findNearbySmallRock: nearest not-currently-occupied vehicle
+// within its own enter range.
+function findNearbyVehicle() {
+  let best = null, bestD = Infinity;
+  for (const v of vehicles) {
+    if (v.occupied) continue;
+    const dx = v.pos.x - player.pos.x, dz = v.pos.z - player.pos.z;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    if (d < v.enterRange && d < bestD) { bestD = d; best = v; }
+  }
+  return best;
+}
+
+function enterVehicle(v) {
+  drivingVehicle = v;
+  v.occupied = true;
+  player.mesh.visible = false;
+  savedCamDistTarget = camDistTarget;
+  camDistTarget = v.cameraDist;
+  hints.trigger('enterVehicle');
+}
+
+function exitVehicle() {
+  const v = drivingVehicle;
+  if (!v) return;
+  // Step out to the vehicle's side, not straight in front of a blade/bucket.
+  const fx = Math.sin(v.facing), fz = Math.cos(v.facing);
+  const sideX = -fz, sideZ = fx;
+  const side = Math.random() < 0.5 ? -1 : 1;
+  let px = v.pos.x + sideX * side * v.exitOffset;
+  let pz = v.pos.z + sideZ * side * v.exitOffset;
+  px = THREE.MathUtils.clamp(px, 1, SIZE - 1);
+  pz = THREE.MathUtils.clamp(pz, 1, SIZE - 1);
+  player.pos.set(px, terrain.sampleHeightBilinear(px, pz), pz);
+  player.facing = v.facing;
+  player.mesh.visible = true;
+  v.occupied = false;
+  drivingVehicle = null;
+  if (savedCamDistTarget != null) { camDistTarget = savedCamDistTarget; savedCamDistTarget = null; }
+}
+
+// input for whichever vehicle is currently occupied - W/S throttle, A/D
+// (tank-pivot) steer, exactly the same physical keys/joystick as on-foot
+// movement, so getting in doesn't mean learning a new control scheme. Z/X
+// additionally rotate the excavator's cab independent of its tracks - the
+// "extra input while driving" the brief calls for to aim the dig.
+function computeVehicleControls() {
+  let throttle = 0, steer = 0, cabTurn = 0;
+  if (keys.has('KeyW') || keys.has('ArrowUp')) throttle += 1;
+  if (keys.has('KeyS') || keys.has('ArrowDown')) throttle -= 1;
+  if (keys.has('KeyD') || keys.has('ArrowRight')) steer += 1;
+  if (keys.has('KeyA') || keys.has('ArrowLeft')) steer -= 1;
+  throttle -= touch.y; // joystick pushed up (forward) => touch.y negative, see computeMoveVector
+  steer += touch.x;
+  if (keys.has('KeyX')) cabTurn += 1;
+  if (keys.has('KeyZ')) cabTurn -= 1;
+  return {
+    throttle: THREE.MathUtils.clamp(throttle, -1, 1),
+    steer: THREE.MathUtils.clamp(steer, -1, 1),
+    cabTurn: THREE.MathUtils.clamp(cabTurn, -1, 1),
+  };
+}
+
+let dozerScrapeCooldown = 0;
+function handleVehicleEvents(result, dt) {
+  if (result.gradeEvent) {
+    const g = result.gradeEvent;
+    particles.burst(g.x, g.y + 0.12, g.z, 3, {
+      color: [0.74, 0.63, 0.44], life: 0.4, up: 0.9, upVar: 0.5, spread: 0.9,
+    });
+    dozerScrapeCooldown -= dt;
+    if (dozerScrapeCooldown <= 0) {
+      audio.digScrape();
+      dozerScrapeCooldown = 0.35 + Math.random() * 0.15;
+    }
+    hints.trigger('bulldoze');
+  }
+  if (result.digEvent) {
+    const e = result.digEvent;
+    if (e.kind === 'dig') {
+      audio.digScrape();
+      particles.burst(e.x, e.y + 0.18, e.z, 12, {
+        color: [0.82, 0.73, 0.53], life: 0.6, up: 1.8, upVar: 1.0, spread: 1.3,
+      });
+      hints.trigger('excavatorDig');
+    } else if (e.kind === 'dump') {
+      audio.rockScrape();
+      particles.burst(e.x, e.y + 0.18, e.z, 9, {
+        color: [0.74, 0.63, 0.44], life: 0.5, up: 1.0, upVar: 0.6, spread: 1.1,
+      });
+    }
+  }
+}
+
 // ---------- shovel action ----------
 
 // Straightforward, no inventory: hold the button and the shovel keeps taking
@@ -808,6 +987,10 @@ const hints = {
     putDown: null,
     pushRock: null,
     tideRise: 'The tide is turning. Watch what it does to the stream mouth.',
+    nearVehicle: 'A bulldozer and an excavator, parked nearby. Walk up and press E to hop in.',
+    enterVehicle: 'W/S drive, A/D turn. The excavator also has Z/X to rotate its cab, and click to dig.',
+    bulldoze: null,
+    excavatorDig: null,
   },
   trigger(key) {
     if (this.shown.has(key)) return;
@@ -849,6 +1032,38 @@ function updateTideUI() {
   lastTideHeight = h;
 }
 
+// ---------- vehicle prompt / HUD ----------
+
+const vehiclePromptEl = document.getElementById('vehiclePrompt');
+const vehicleHudEl = document.getElementById('vehicleHud');
+
+function updateVehicleUI() {
+  if (drivingVehicle) {
+    vehiclePromptEl.style.display = 'none';
+    vehicleHudEl.style.display = 'block';
+    vehicleHudEl.textContent = drivingVehicle.type === 'excavator'
+      ? 'W/S drive · A/D turn · Z/X rotate cab · click to dig · E to exit'
+      : 'W/S drive · A/D turn · drive into a mound to grade it · E to exit';
+    interactBtn.textContent = 'Exit';
+    digBtnEl.style.display = drivingVehicle.type === 'excavator' ? '' : 'none';
+    smoothBtnEl.style.display = 'none';
+  } else {
+    vehicleHudEl.style.display = 'none';
+    digBtnEl.style.display = '';
+    smoothBtnEl.style.display = '';
+    const nearVeh = findNearbyVehicle();
+    if (nearVeh) {
+      hints.trigger('nearVehicle');
+      vehiclePromptEl.style.display = 'block';
+      vehiclePromptEl.textContent = `Press E to enter the ${nearVeh.label.toLowerCase()}`;
+      interactBtn.textContent = 'Enter';
+    } else {
+      vehiclePromptEl.style.display = 'none';
+      interactBtn.textContent = player.carriedRock ? 'Put down' : 'Pick up';
+    }
+  }
+}
+
 // ---------- sound toggle ----------
 
 const soundBtn = document.getElementById('sound');
@@ -869,7 +1084,7 @@ soundBtn.addEventListener('click', () => {
 // this flag, the reset button appeared to do nothing at all.
 let resetting = false;
 
-function doSave() { if (!resetting) saveState({ terrain, water, rocks, player }); }
+function doSave() { if (!resetting) saveState({ terrain, water, rocks, player, vehicles }); }
 
 // Periodic autosave (every dig/push/tide-tick is too frequent to serialize
 // ~140x140 float arrays on every one) plus a save right when the tab is about
@@ -933,14 +1148,22 @@ let streamCheckAccum = 0;
 // otherwise makes it impossible to verify any time-driven behaviour from outside
 // the page.
 function stepFrame(dt, elapsedTime) {
-  const move = computeMoveVector();
-  player.update(dt, { moveVector: move, run: keys.has('Space') || touch.run || sprintHeld }, { SIZE });
+  if (drivingVehicle) {
+    const result = drivingVehicle.update(dt, computeVehicleControls(), terrain, water);
+    handleVehicleEvents(result, dt);
+  } else {
+    const move = computeMoveVector();
+    player.update(dt, { moveVector: move, run: keys.has('Space') || touch.run || sprintHeld }, { SIZE });
+    updateRockPushing(dt);
+    updateCarriedRock();
+    updateShovel(dt);
+  }
+  // Parked vehicles still settle onto whatever the ground under them is doing
+  // (a bulldozer graded near a parked excavator, tide-driven erosion, etc).
+  for (const v of vehicles) if (v !== drivingVehicle) v.base._settleInPlace(terrain);
 
-  updateRockPushing(dt);
   updateRockGravity(dt);
   updateRockCollisions();
-  updateCarriedRock();
-  updateShovel(dt);
 
   // Rocks move (pushed, carried, dropped) - rebuild their hydraulic halo from the
   // live rock list before the water sim reads it this frame. Cheap: a few dozen
@@ -956,13 +1179,15 @@ function stepFrame(dt, elapsedTime) {
   ocean.uniforms.uTime.value = elapsedTime;
   birds.update(elapsedTime);
   updateTideUI();
+  updateVehicleUI();
   hints.update(dt);
 
+  const audioSubject = drivingVehicle || player;
   streamCheckAccum += dt;
   if (streamCheckAccum > 0.4) {
     streamCheckAccum = 0;
-    const near = water.flowAt(player.pos.x, player.pos.z);
-    audio.setStreamIntensity(Math.min(1, near.speed * 1.2 + water.depthAt(player.pos.x, player.pos.z) * 0.5));
+    const near = water.flowAt(audioSubject.pos.x, audioSubject.pos.z);
+    audio.setStreamIntensity(Math.min(1, near.speed * 1.2 + water.depthAt(audioSubject.pos.x, audioSubject.pos.z) * 0.5));
   }
 
   renderer.render(scene, camera);
@@ -977,11 +1202,18 @@ function animate() {
 window.__game = {
   player, camera, terrain, water, rocks, scene, updateShovel, debris,
   renderer, hemi, sun, fill, // exposed for lighting/material debugging in the browser console
+  vehicles,
+  getDrivingVehicle: () => drivingVehicle,
+  enterVehicleByIndex: (i) => { const v = vehicles[i]; if (v && !v.occupied) enterVehicle(v); return !!drivingVehicle; },
+  exitVehicleNow: () => exitVehicle(),
+  requestVehicleDig: () => { if (drivingVehicle && drivingVehicle.type === 'excavator') drivingVehicle.requestDig(); },
   setTouchDig: (v) => { touchDigHeld = v; },
   debug: () => ({
     camDist, camDistTarget, introTimer, clockElapsed: clock.elapsedTime,
     mouseLeft: mouse.left, mouseRight: mouse.right, mouseNdc: [mouse.ndcX, mouse.ndcY],
     touchDigHeld, touchSmoothHeld,
+    drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
+    vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,

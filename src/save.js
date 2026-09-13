@@ -25,7 +25,7 @@ function base64ToF32(b64) {
   return new Float32Array(bytes.buffer);
 }
 
-export function saveState({ terrain, water, rocks, player }) {
+export function saveState({ terrain, water, rocks, player, vehicles }) {
   try {
     const data = {
       v: SCHEMA_VERSION,
@@ -46,6 +46,11 @@ export function saveState({ terrain, water, rocks, player }) {
       })),
       playerX: player.pos.x,
       playerZ: player.pos.z,
+      // Vehicles are as much "player work" as moved rocks - keep them wherever
+      // they were parked/driven to, not reset to their spawn point every reload.
+      // Optional (older saves / a fresh level simply won't have this key), so
+      // reading it back is guarded with Array.isArray in main.js.
+      vehicles: Array.isArray(vehicles) ? vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, heading: v.facing })) : undefined,
     };
     localStorage.setItem(KEY, JSON.stringify(data));
     return true;

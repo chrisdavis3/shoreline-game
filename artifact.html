@@ -41,6 +41,23 @@
   #tideBar { width: 64px; height: 3px; background: rgba(255,255,255,0.18); position: relative; border-radius: 2px; }
   #tideBar > i { position: absolute; top: -2px; width: 2px; height: 7px; background: #bfe0ff; border-radius: 1px; }
 
+  #vehiclePrompt {
+    position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 13px; color: rgba(255,255,255,0.92); text-shadow: 0 1px 3px rgba(0,0,0,0.7);
+    background: rgba(20,25,26,0.55); border: 1px solid rgba(255,255,255,0.3); border-radius: 20px;
+    padding: 8px 16px; z-index: 10; pointer-events: none; display: none; white-space: nowrap;
+  }
+  #vehicleHud {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 12px; letter-spacing: 0.02em; color: rgba(255,255,255,0.85);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.7); text-align: center; z-index: 10;
+    pointer-events: none; display: none;
+  }
+  body.touch #vehicleHud { bottom: auto; top: 54px; }
+  body.touch #vehiclePrompt { bottom: auto; top: 90px; }
+
   #filmGrade {
     position: fixed; inset: 0; z-index: 6; pointer-events: none;
     background:
@@ -132,6 +149,9 @@
   <div id="tideBar"><i id="tideMarker"></i></div>
 </div>
 
+<div id="vehiclePrompt"></div>
+<div id="vehicleHud"></div>
+
 <button id="sound">Sound: on</button>
 
 <button id="resetBtn">Reset beach</button>
@@ -160,4 +180,4 @@
   }
 }
 </script>
-<script type="module" src="./src/main.js?v=80"></script>
+<script type="module" src="./src/main.js?v=81"></script>
