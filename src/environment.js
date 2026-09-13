@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells } from './terrain.js?v=58';
-import { Noise2D } from './noise.js?v=58';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=60';
+import { Noise2D } from './noise.js?v=60';
 
 const decoNoise = new Noise2D(555);
 
@@ -515,11 +515,28 @@ export function buildSkirt(terrain) {
     const dzLand = Math.max(0, -z);
     const dzSea = Math.max(0, z - SIZE);
 
+    // The stream has to visibly come FROM somewhere: without this, the inland
+    // edge (z<0, upstream of the simulated grid) rose into cliff exactly like
+    // the lateral sides, so the river simply dead-ended into a flat rock wall
+    // with a rectangular water-mesh cutoff - "why do the edges just stop".
+    // streamCenterX(z) extrapolates smoothly for z<0, so sampling it out here
+    // continues the same meander upstream and gives a valley mouth the water
+    // plausibly flows out of, rather than a static slot.
+    const streamXHere = streamCenterX(z);
+
     for (let ix = 0; ix < nx; ix++) {
       const x = xs[ix];
       const k = jz * nx + ix;
       const dxOut = Math.max(0, left - x, x - right);
-      const outside = Math.max(dxOut, dzLand);
+      let dzLandEff = dzLand;
+      if (dzLand > 0) {
+        const distFromStream = Math.abs(x - streamXHere);
+        const notchWidth = 9 + dzLand * 0.25; // widens gradually further upstream
+        const notchFactor = THREE.MathUtils.clamp(1 - distFromStream / notchWidth, 0, 1);
+        const eased = notchFactor * notchFactor * (3 - 2 * notchFactor);
+        dzLandEff = dzLand * (1 - eased * 0.92);
+      }
+      const outside = Math.max(dxOut, dzLandEff);
 
       let y;
       if (outside <= 0 && dzSea <= 0) {
@@ -529,7 +546,6 @@ export function buildSkirt(terrain) {
         // seaward beyond the beach - sink below the ocean surface so it's hidden
         y = -6 - dzSea * 0.4;
       } else {
-        const n = decoNoise.fbm(x * 0.012, z * 0.012, 4);
         // A real Cornish headland is a near-vertical rock face RIGHT at the sand,
         // not a hill that only reaches real height 100+ metres back - the old
         // single power curve normalised against SIZE*1.4 (~160m) meant the whole
@@ -540,22 +556,38 @@ export function buildSkirt(terrain) {
         const nearRise = Math.pow(Math.min(1, outside / 15), 0.5);
         const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
         const rise = nearRise * 0.75 + farRise * 0.5;
-        // Higher-frequency jagged detail (crags, ledges, gullies) layered only
-        // near the cliff face itself (gated by nearRise) - the smooth `n` field
-        // alone reads as a rounded hill, not fractured rock.
-        const crag = decoNoise.fbm(x * 0.07 + 250, z * 0.07 + 250, 5) - 0.5;
-        const crag2 = decoNoise.fbm(x * 0.22 + 700, z * 0.22 + 700, 3) - 0.5;
+
+        // Domain-warp the sampling coordinate before any ridge noise. Without
+        // this, every ridge's amplitude is purely a function of distance from
+        // the (smooth) boundary contour, so the whole face reads as concentric
+        // rings/corduroy parallel to the coastline - a dead giveaway of
+        // procedural code, and exactly the "still looks like shit" fan pattern.
+        // Warping the noise INPUT (not the actual vertex position) breaks that
+        // correlation while leaving the mesh topology untouched.
+        const warpX_ = x + decoNoise.fbm(x * 0.008 + 1000, z * 0.008 + 1000, 3) * 55;
+        const warpZ_ = z + decoNoise.fbm(x * 0.008 + 3000, z * 0.008 + 3000, 3) * 55;
+        const n = decoNoise.fbm(warpX_ * 0.012, warpZ_ * 0.012, 4);
+        // Ridged (1-|noise|) multifractal for actual fractured-rock silhouette -
+        // sharp V ridges/valleys - instead of the smooth rolling swell plain fbm
+        // gives, at two independent scales for big fracture lines plus finer
+        // crumbled detail. Gated by nearRise so distant hills stay soft/hazy.
+        const bigRock = decoNoise.ridged(warpX_ * 0.02 + 500, warpZ_ * 0.02 + 500, 4) - 0.5;
+        const fineRock = decoNoise.ridged(warpX_ * 0.09 + 900, warpZ_ * 0.09 + 900, 3) - 0.5;
         const edgeY = terrain.sampleHeightBilinear(
           THREE.MathUtils.clamp(x, 1, SIZE - 1),
           THREE.MathUtils.clamp(z, 1, SIZE - 1),
         );
-        y = edgeY + rise * (30 + n * 16) + crag * 11 * nearRise + crag2 * 4 * nearRise;
+        y = edgeY + rise * (30 + n * 14) + bigRock * 22 * nearRise + fineRock * 7 * nearRise;
         if (dzSea > 0) y -= dzSea * 0.6; // taper down toward the sea horizon at the far corners
       }
       positions[k * 3] = x; positions[k * 3 + 1] = y; positions[k * 3 + 2] = z;
       uvs[k * 2] = ix / (nx - 1); uvs[k * 2 + 1] = jz / (nz - 1);
 
-      const distT = THREE.MathUtils.clamp(outside / (SIZE * 1.1), 0, 1);
+      // Haze only kicks in well past the near cliff face - the old divisor
+      // (SIZE*1.1) meant most of the visible rock right next to the beach was
+      // already >50% blended toward pale grey-blue, washing out all the color
+      // and shadow contrast that makes rock read as rock.
+      const distT = THREE.MathUtils.clamp((outside - 60) / (SIZE * 2.2), 0, 1);
       // Diagonal strata, same technique as the real cliff face: mixing x into the
       // phase alongside height tilts the bands into sloped strata instead of
       // horizontal rings.
