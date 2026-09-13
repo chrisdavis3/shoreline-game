@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=78';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=79';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -181,10 +181,22 @@ export class WaterSim {
     // fresh every frame in _syncMeshAttrs - see the RENDER_SS comment up top for
     // why this replaced a CPU-side per-vertex upsample. RGBAFormat/FloatType for
     // broad support; only R/G channels are actually used per texture.
+    // NEAREST, not LINEAR: hardware linear filtering on a FLOAT texture needs the
+    // OES_texture_float_linear extension, which is NOT universally supported on
+    // mobile GPUs - when it's missing, most drivers silently ignore the filter
+    // request rather than erroring, so this used to just... work, until it didn't.
+    // Confirmed live on an actual iPhone: a severe, perfectly regular banded/
+    // striped pattern across the whole water surface, absent on every desktop
+    // browser tested (which do support it) - exactly what nearest-neighbour
+    // upsampling of a coarse 140x140 grid looks like. Fixed properly below by
+    // doing the bilinear interpolation manually in the shader (sampleBilinear),
+    // which only ever does plain NEAREST texel fetches - no dependency on any
+    // GPU filtering extension at all, so this can't silently regress again on
+    // some other device.
     const mkFieldTexture = () => {
       const tex = new THREE.DataTexture(new Float32Array(N * N * 4), N, N, THREE.RGBAFormat, THREE.FloatType);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.magFilter = THREE.NearestFilter;
       tex.wrapS = THREE.ClampToEdgeWrapping;
       tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.generateMipmaps = false;
@@ -221,16 +233,34 @@ export class WaterSim {
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
+
+        // Manual bilinear sample - textures are NEAREST-filtered (see mkFieldTexture
+        // in water.js for why), so this does the interpolation in plain arithmetic
+        // instead of depending on hardware LINEAR filtering support.
+        vec4 sampleBilinear(sampler2D tex, vec2 uv) {
+          float texN = ${N.toFixed(1)};
+          vec2 tc = uv * texN - 0.5;
+          vec2 i = floor(tc);
+          vec2 f = tc - i;
+          vec2 uv00 = clamp((i + vec2(0.5, 0.5)) / texN, 0.0, 1.0);
+          vec2 uv10 = clamp((i + vec2(1.5, 0.5)) / texN, 0.0, 1.0);
+          vec2 uv01 = clamp((i + vec2(0.5, 1.5)) / texN, 0.0, 1.0);
+          vec2 uv11 = clamp((i + vec2(1.5, 1.5)) / texN, 0.0, 1.0);
+          vec4 c00 = texture2D(tex, uv00), c10 = texture2D(tex, uv10);
+          vec4 c01 = texture2D(tex, uv01), c11 = texture2D(tex, uv11);
+          return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+        }
+
         void main() {
           // The coarse N x N sim fields (depth/flow/velocity/terrain height),
-          // GPU-bilinear-sampled here instead of CPU-upsampled per vertex every
+          // bilinear-sampled here instead of CPU-upsampled per vertex every
           // frame - see the RENDER_SS comment at the top of water.js for why.
-          vec2 depthFlow = texture2D(uDepthFlowTex, aFieldUV).rg;
+          vec2 depthFlow = sampleBilinear(uDepthFlowTex, aFieldUV).rg;
           float aDepth = depthFlow.r;
           vDepth = aDepth;
           vFlow = depthFlow.g;
-          vFlowDir = texture2D(uVelTex, aFieldUV).rg;
-          float terrainH = texture2D(uHeightTex, aFieldUV).r;
+          vFlowDir = sampleBilinear(uVelTex, aFieldUV).rg;
+          float terrainH = sampleBilinear(uHeightTex, aFieldUV).r;
 
           vec3 pos = position;
           pos.y = terrainH + aDepth + 0.006;
