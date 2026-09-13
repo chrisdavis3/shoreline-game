@@ -1,13 +1,23 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=74';
-import { WaterSim } from './water.js?v=74';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=74';
-import { scatterRocks, Rock } from './rocks.js?v=74';
-import { Player } from './player.js?v=74';
-import { AudioSystem } from './audio.js?v=74';
-import { Particles } from './particles.js?v=74';
-import { Debris } from './debris.js?v=74';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=74';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=76';
+import { WaterSim } from './water.js?v=76';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=76';
+import { scatterRocks, Rock } from './rocks.js?v=76';
+import { Player } from './player.js?v=76';
+import { AudioSystem } from './audio.js?v=76';
+import { Particles } from './particles.js?v=76';
+import { Debris } from './debris.js?v=76';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=76';
+
+// Bumped alongside every ?v=N cache-bust across the project (see version.txt,
+// fetched below) - mobile Safari in particular can keep an old tab's JS
+// running indefinitely across app-switches/backgrounding with no new network
+// request at all (it's a suspended tab, not a cache-header problem, so no
+// amount of server-side cache-busting reaches it) - the only way a long-lived
+// tab ever picks up a fix is to actually reload. Checked whenever the tab
+// becomes visible again (see checkForUpdate below), which is exactly when a
+// player is starting a new session anyway, not interrupting one mid-action.
+const APP_VERSION = 76;
 
 // ---------- renderer / scene / camera ----------
 
@@ -99,11 +109,6 @@ scene.add(water.mesh);
 const sky = buildSky(scene);
 const ocean = buildOcean(water.uniforms);
 scene.add(ocean.mesh);
-scene.add(buildSkirt(terrain));
-scene.add(buildVillage(terrain));
-
-const props = scatterProps(terrain);
-scene.add(props);
 
 const birds = buildBirds(scene);
 
@@ -185,6 +190,17 @@ if (savedData) {
   terrain.refreshFineMeshFully();
   water._syncMeshAttrs(terrain);
 }
+
+// Placed AFTER priming/restore (not right after construction) - these sample
+// live terrain height, and priming runs real erosion/slumping for up to 40
+// simulated seconds (see the sand-slumping pass added to fix the stream-bank
+// staircase). Placing decoration first meant grass/pebbles near the banks
+// were pinned to the PRE-erosion height, then the ground moved out from
+// under them during priming - "grass floating in the air" by the river.
+scene.add(buildSkirt(terrain));
+scene.add(buildVillage(terrain));
+const props = scatterProps(terrain);
+scene.add(props);
 
 // ---------- input ----------
 
@@ -583,6 +599,78 @@ function updateRockPushing(dt) {
   }
 }
 
+// Rocks used to only ever collide with the PLAYER (see updateRockPushing) -
+// two rocks pushed toward each other just interpenetrated, since nothing ever
+// checked rock-vs-rock distance. Positional correction only (no momentum/
+// impulse) - rocks aren't otherwise simulated bodies, they're moved by direct
+// position sets elsewhere (pushing, carrying, gravity below), so a full
+// physics response would be solving a problem nothing else here has.
+function updateRockCollisions() {
+  for (let i = 0; i < rocks.length; i++) {
+    const a = rocks[i];
+    if (a.carried) continue;
+    for (let j = i + 1; j < rocks.length; j++) {
+      const b = rocks[j];
+      if (b.carried) continue;
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const dist = Math.sqrt(dx * dx + dz * dz) || 0.0001;
+      const minDist = a.radius + b.radius;
+      if (dist >= minDist) continue;
+      const overlap = minDist - dist;
+      const nx = dx / dist, nz = dz / dist;
+      // Heavier rock gives way less - split the correction by the OTHER rock's
+      // mass share, so a small rock shoved into a large one mostly moves itself.
+      const totalMass = a.mass + b.mass;
+      const aShare = overlap * (b.mass / totalMass);
+      const bShare = overlap * (a.mass / totalMass);
+      a.moveTo(
+        THREE.MathUtils.clamp(a.x - nx * aShare, 0.5, SIZE - 0.5),
+        THREE.MathUtils.clamp(a.z - nz * aShare, 0.5, SIZE - 0.5),
+        terrain,
+      );
+      b.moveTo(
+        THREE.MathUtils.clamp(b.x + nx * bShare, 0.5, SIZE - 0.5),
+        THREE.MathUtils.clamp(b.z + nz * bShare, 0.5, SIZE - 0.5),
+        terrain,
+      );
+    }
+  }
+}
+
+// Rocks sat wherever they were placed or last pushed to, forever, even on a
+// steep dug-out slope - real boulders don't just balance on an incline. Any
+// unheld rock on ground steeper than a real angle of repose rolls downhill on
+// its own, using the exact same "roll distance / radius = rotation" physics
+// as being pushed by the player (see updateRockPushing) - it should look like
+// the same rock, just moved by gravity instead of a shove.
+const ROCK_GRAVITY_THRESHOLD = 0.16; // slope (rise/run) below this: stays put, no jitter on gentle ground
+const ROCK_GRAVITY_ACCEL = 2.0;
+const ROCK_MAX_ROLL_SPEED = 3.2;
+function updateRockGravity(dt) {
+  for (const r of rocks) {
+    if (r.carried) continue;
+    const eps = Math.max(0.3, r.radius * 0.6);
+    const h0 = terrain.sampleHeightBilinear(r.x, r.z);
+    const hX = terrain.sampleHeightBilinear(r.x + eps, r.z);
+    const hZ = terrain.sampleHeightBilinear(r.x, r.z + eps);
+    const gx = (hX - h0) / eps, gz = (hZ - h0) / eps;
+    const slope = Math.sqrt(gx * gx + gz * gz);
+    if (slope < ROCK_GRAVITY_THRESHOLD) continue;
+    const dirX = -gx / slope, dirZ = -gz / slope; // downhill = against the gradient
+    const speed = Math.min(ROCK_MAX_ROLL_SPEED, (slope - ROCK_GRAVITY_THRESHOLD) * ROCK_GRAVITY_ACCEL / Math.max(0.4, r.mass));
+    const moveAmt = speed * dt;
+    if (moveAmt < 0.0003) continue;
+    r.moveTo(
+      THREE.MathUtils.clamp(r.x + dirX * moveAmt, 0.5, SIZE - 0.5),
+      THREE.MathUtils.clamp(r.z + dirZ * moveAmt, 0.5, SIZE - 0.5),
+      terrain,
+    );
+    const rollAxis = _rollAxis.set(dirZ, 0, -dirX).normalize();
+    const rollAngle = moveAmt / r.radius;
+    r.mesh.quaternion.premultiply(_rollQuat.setFromAxisAngle(rollAxis, rollAngle));
+  }
+}
+
 // ---------- shovel action ----------
 
 // Straightforward, no inventory: hold the button and the shovel keeps taking
@@ -788,6 +876,30 @@ if (resetBtn) {
   });
 }
 
+// ---------- auto-update on a stale tab ----------
+
+// version.txt is a tiny static file bumped alongside every ?v=N cache-bust -
+// fetched with cache disabled so THIS request always reaches the server even
+// though the JS modules themselves are cache-busted by query string. Checked
+// when the tab becomes visible again (returning from another app, unlocking
+// the phone) - a long-suspended mobile tab can sit on old code indefinitely
+// with no new network request at all until something explicitly asks. Saves
+// first so a real update doesn't throw away whatever the player just did.
+async function checkForUpdate() {
+  try {
+    const res = await fetch(`version.txt?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const latest = parseInt((await res.text()).trim(), 10);
+    if (Number.isFinite(latest) && latest !== APP_VERSION) {
+      doSave();
+      location.reload();
+    }
+  } catch (e) { /* offline, or the request was blocked - just skip, try again next time */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkForUpdate();
+});
+
 // ---------- footstep / stream audio hookups ----------
 
 player.onFootstep = () => { if (audio.started) audio.footstep(); };
@@ -797,14 +909,21 @@ player.onFootstep = () => { if (audio.started) audio.footstep(); };
 const clock = new THREE.Clock();
 let streamCheckAccum = 0;
 
-function animate() {
-  requestAnimationFrame(animate);
-  const dt = Math.min(0.05, clock.getDelta());
-
+// Split from animate() so a frame can be driven manually (see window.__game
+// .stepFrame) for testing/debugging - `requestAnimationFrame` doesn't reliably
+// fire in every embedding context this game gets tested in (a backgrounded or
+// non-OS-focused tab can silently stop ticking rAF at all, even while
+// `document.hidden` reports false and JS itself keeps running - confirmed live:
+// `performance.now()` advances normally while an rAF counter stays at 0), which
+// otherwise makes it impossible to verify any time-driven behaviour from outside
+// the page.
+function stepFrame(dt, elapsedTime) {
   const move = computeMoveVector();
   player.update(dt, { moveVector: move, run: keys.has('Space') || touch.run || sprintHeld }, { SIZE });
 
   updateRockPushing(dt);
+  updateRockGravity(dt);
+  updateRockCollisions();
   updateCarriedRock();
   updateShovel(dt);
 
@@ -815,12 +934,12 @@ function animate() {
   water.update(dt, terrain);
   terrain.update(dt);
   particles.update(dt);
-  debris.update(dt, clock.elapsedTime);
+  debris.update(dt, elapsedTime);
 
   updateCamera(dt);
-  sky.material.uniforms.uTime.value = clock.elapsedTime;
-  ocean.uniforms.uTime.value = clock.elapsedTime;
-  birds.update(clock.elapsedTime);
+  sky.material.uniforms.uTime.value = elapsedTime;
+  ocean.uniforms.uTime.value = elapsedTime;
+  birds.update(elapsedTime);
   updateTideUI();
   hints.update(dt);
 
@@ -834,6 +953,12 @@ function animate() {
   renderer.render(scene, camera);
 }
 
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, clock.getDelta());
+  stepFrame(dt, clock.elapsedTime);
+}
+
 window.__game = {
   player, camera, terrain, water, rocks, scene, updateShovel, debris,
   renderer, hemi, sun, fill, // exposed for lighting/material debugging in the browser console
@@ -845,6 +970,7 @@ window.__game = {
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,
+  stepFrame: (dt, n = 1) => { for (let i = 0; i < n; i++) stepFrame(dt, clock.elapsedTime + dt * i); },
   hasSave: () => !!loadSavedData(),
   clearSaveNow: clearSave,
 };
