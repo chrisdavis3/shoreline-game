@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=100';
+import { Noise2D } from './noise.js?v=101';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -1071,9 +1071,19 @@ export class Terrain {
         if (z <= L2_T_FALL0 * SIZE) continue; // flat plateau/lake - nothing to smooth
         const ci = streamCenterXLevel2(z) / CELL;
         for (let i = 1; i < GRID - 1; i++) {
-          if (Math.abs(i - ci) < 13) continue; // leave the river/falls/steps untouched
+          // A hard on/off cutoff here (< 13: skip, >= 13: fully smoothed) put
+          // a sharp, literal edge in the terrain exactly at that boundary -
+          // and since the river's centreline is a smooth curve crossing a
+          // discrete grid, which integer cells fell just inside vs. just
+          // outside that boundary changed unevenly row to row, so the edge
+          // itself came out as a jagged sawtooth (confirmed live: a comb of
+          // regular triangular teeth along both banks). Fades in gradually
+          // over a few cells instead of switching outright.
+          const w = THREE.MathUtils.smoothstep(Math.abs(i - ci), 11, 15);
+          if (w <= 0) continue;
           const k = idx(i, j);
-          this.bedrock[k] = (src[k] + src[idx(i - 1, j)] + src[idx(i + 1, j)] + src[idx(i, j - 1)] + src[idx(i, j + 1)]) / 5;
+          const avg = (src[k] + src[idx(i - 1, j)] + src[idx(i + 1, j)] + src[idx(i, j - 1)] + src[idx(i, j + 1)]) / 5;
+          this.bedrock[k] = THREE.MathUtils.lerp(src[k], avg, w);
         }
       }
     }
