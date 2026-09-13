@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { warpX } from './terrain.js?v=77';
+import { warpX } from './terrain.js?v=78';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this
@@ -186,7 +186,13 @@ export class Player {
     this.carriedRock = null;
     this.pushingRock = null;
     this.reach = 2.35;
-    this.pickupRange = 1.7;
+    // Widened from 1.7 - a small rock sitting right next to (or now, with
+    // rock-rock collision, wedged against) a medium/large rock is often
+    // physically unreachable at the old range, since the bigger rock's own
+    // collision keeps the player from walking close enough to it to register
+    // - "picking up smaller stones in a pile is near impossible". More slack
+    // here means the player doesn't have to stand exactly on top of it.
+    this.pickupRange = 2.4;
 
     this.footstepAccum = 0;
     this.onFootstep = null;
@@ -204,7 +210,7 @@ export class Player {
     const moving = move.lengthSq() > 0.0001;
     const running = input.run && moving;
 
-    const maxSpeed = running ? 4.6 : 2.5;
+    const maxSpeed = running ? 6.0 : 2.5; // sprint +30% (was 4.6)
     const accel = 14;
     const targetVel = move.clone().multiplyScalar(maxSpeed);
 

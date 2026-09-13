@@ -1,13 +1,13 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=77';
-import { WaterSim } from './water.js?v=77';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=77';
-import { scatterRocks, Rock } from './rocks.js?v=77';
-import { Player } from './player.js?v=77';
-import { AudioSystem } from './audio.js?v=77';
-import { Particles } from './particles.js?v=77';
-import { Debris } from './debris.js?v=77';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=77';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=78';
+import { WaterSim } from './water.js?v=78';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=78';
+import { scatterRocks, Rock } from './rocks.js?v=78';
+import { Player } from './player.js?v=78';
+import { AudioSystem } from './audio.js?v=78';
+import { Particles } from './particles.js?v=78';
+import { Debris } from './debris.js?v=78';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=78';
 
 // Bumped alongside every ?v=N cache-bust across the project (see version.txt,
 // fetched below) - mobile Safari in particular can keep an old tab's JS
@@ -17,7 +17,7 @@ import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 77;
+const APP_VERSION = 78;
 
 // ---------- renderer / scene / camera ----------
 
@@ -561,7 +561,14 @@ function updateRockPushing(dt) {
       player.velocity.z -= tz * velAlongTangent * grip;
     }
 
-    const pushSpeed = (1.1 / r.mass) * resist;
+    // Push speed used to be a flat constant, completely independent of how fast
+    // the player was actually moving into the rock - sprinting into a boulder
+    // pushed it no harder than walking into it, which read as sprint doing
+    // nothing at all. Tied directly to velIntoRock (the player's own speed
+    // along the push direction) instead, with a small floor so a stationary
+    // lean still nudges a light rock - sprint's real ~2.4x speed advantage
+    // over walking now carries straight through to a proportionally faster push.
+    const pushSpeed = (Math.max(0.5, velIntoRock * 0.9) / r.mass) * resist;
     const moveAmt = Math.min(overlap, pushSpeed * dt);
     if (moveAmt > 0.0005) {
       const nx2 = THREE.MathUtils.clamp(r.x + nx * moveAmt, 0.5, SIZE - 0.5);
