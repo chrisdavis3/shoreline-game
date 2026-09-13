@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=73';
+import { Noise2D } from './noise.js?v=74';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -210,8 +210,24 @@ function clampIdx(v) { return v < 0 ? 0 : v > GRID - 1 ? GRID - 1 : v; }
 // exactly through every coarse sample (unlike a least-squares fit) while
 // keeping a continuous derivative, so adjacent coarse cells blend smoothly
 // instead of showing the facet naive bilinear would produce at each seam.
+//
+// Clamped to [min(p1,p2), max(p1,p2)]: a plain Catmull-Rom can overshoot past
+// its own p1/p2 samples wherever the SLOPE changes abruptly right at a coarse
+// cell boundary (classic Gibbs-type ringing at a kink, not at a discontinuity
+// in the values themselves, which stay perfectly smooth and monotonic either
+// side). Confirmed live to matter here specifically: the stream-channel slope-
+// limiter above (see MAX_CROSS_SLOPE) produces an exactly linear ramp up to
+// the point where it hands back off to the channel's own Gaussian curve - a
+// kink in slope, even though every actual height value on both sides is
+// smooth - and the unclamped cubic rang past it into a fresh ~75 degree spike
+// exactly at that seam, undoing the slope limiter's own fix one interpolation
+// step later. Clamping is a no-op wherever the four samples already lie on a
+// smooth curve (the overwhelming majority of the terrain), so this doesn't
+// soften any genuinely smooth slope - it only ever pulls back an overshoot.
 function catmullRom1D(p0, p1, p2, p3, t) {
-  return p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+  const v = p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+  const lo = Math.min(p1, p2), hi = Math.max(p1, p2);
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 // Bicubic sample of a coarse GRIDxGRID array at fractional cell coords (fx, fz).
@@ -557,27 +573,149 @@ export class Terrain {
     // The dune ridges can otherwise leave a hump in the streambed that water can
     // never climb over. Force the channel centreline (and the band around it) to
     // keep a gentle, monotonic downhill gradient from source to sea.
+    //
+    // ROOT CAUSE of a reported "tooth/staircase" pattern along the stream banks
+    // (confirmed live, tide-independent - present with the water mesh hidden
+    // entirely, at any tide level, wherever the current waterline happens to sit
+    // at the affected elevation): the original single-pass version below computed
+    // each row's required drop from only the IMMEDIATELY PRECEDING row's ceiling,
+    // then dumped the ENTIRE correction into that one row through the same narrow
+    // Gaussian falloff the regular channel carve uses. Wherever a real dune ridge
+    // crossed the channel steeply - confirmed live right at the stream's source,
+    // where the channel is at its narrowest (width ~2.4 cells) - that whole
+    // multi-metre correction landed on a single row instead of being spread over
+    // the many rows a real streambank would gradually descend across. Measured
+    // live: ~5m of height change compressed into ~1.2m of horizontal distance (a
+    // ~77 degree wall, only a handful of fine-mesh vertices wide) - far steeper
+    // than the fixed terrain mesh resolution can render as anything but a visible
+    // stair-step under raking light. The SAME Gaussian cross-section width also
+    // means a bigger single-row drop directly steepens that row's CROSS-CHANNEL
+    // slope too (a deeper carve at the same lateral width = a steeper wall) -
+    // which is exactly the "77 degree wall" being measured, not a separate effect.
+    //
+    // Fixed in three passes instead of one: first compute the exact same raw,
+    // unsmoothed per-row target this always has (into a scratch array, without
+    // touching the bedrock yet); then walk that array BACKWARD (sea toward
+    // source) capping how far any one row's target may sit above the NEXT (more
+    // seaward) row's already-finalised target - `MAX_DROP_PER_CELL` - pulling the
+    // earlier row down to compensate wherever the raw jump would exceed it; only
+    // then apply the (now gradual) result to the bedrock via the same Gaussian
+    // falloff as before. Since the backward pass only ever makes a row's target
+    // LOWER than the raw ratchet computed (never higher), it can't reintroduce a
+    // hump or weaken the "always strictly downhill" guarantee this whole pass
+    // exists for - it just spreads whatever single big drop the raw pass would
+    // have produced back over as many preceding rows as it takes to keep every
+    // step under the cap, so the SAME total elevation change happens over a much
+    // longer, gentler run instead of one near-vertical wall.
     const MIN_DROP_PER_CELL = 0.006;
-    let ceiling = Infinity;
+    // Caps the steepest a forced correction may descend in a single row. 0.05m
+    // over one ~0.82m cell is a ~3.5 degree grade at the steepest single step -
+    // even a hump needing several metres removed now does it gradually over
+    // dozens of rows (tens of metres of actual channel length, invisible against
+    // the stream's full source-to-sea run) rather than one near-vertical wall.
+    const MAX_DROP_PER_CELL = 0.05;
+    const centerHRaw = new Float32Array(GRID);
+    const rawTarget = new Float32Array(GRID);
+    {
+      let ceiling = Infinity;
+      for (let j = 0; j < GRID; j++) {
+        const z = j * CELL;
+        const cx = streamCenterX(z);
+        const ci = cx / CELL;
+        const centerK = idx(Math.round(THREE.MathUtils.clamp(ci, 0, GRID - 1)), j);
+        const centerH = this.bedrock[centerK];
+        const target = Math.min(centerH, ceiling);
+        centerHRaw[j] = centerH;
+        rawTarget[j] = target;
+        ceiling = target - MIN_DROP_PER_CELL;
+      }
+    }
+    const smoothedTarget = new Float32Array(GRID);
+    smoothedTarget[GRID - 1] = rawTarget[GRID - 1];
+    for (let j = GRID - 2; j >= 0; j--) {
+      smoothedTarget[j] = Math.min(rawTarget[j], smoothedTarget[j + 1] + MAX_DROP_PER_CELL);
+    }
+    // Spreading the drop over more ROWS (above) only fixes the ALONG-channel
+    // slope. Measured live it wasn't enough on its own: the CROSS-channel slope
+    // (within a single row) was still ~80 degrees at a row where the centreline
+    // itself now descends perfectly smoothly - because that slope is just
+    // (how much depth needs removing here) / (the fixed carve width), and the
+    // width this correction used was always the same narrow base channel width
+    // regardless of how much depth it had to remove. A big correction and a
+    // small one were being crammed through the identical lateral footprint, so
+    // the big one was inevitably steeper. Widening the falloff in proportion to
+    // the drop keeps the resulting slope roughly constant instead of growing
+    // with depth - `1.5` is chosen so a drop as big as the base width itself
+    // still resolves to close to the SAME cross-section slope the regular,
+    // un-corrected channel carve already has everywhere else (so a corrected
+    // stretch reads as "normal streambank", not "unusually wide" or "unusually
+    // steep" relative to the rest of the channel).
     for (let j = 0; j < GRID; j++) {
+      const drop = centerHRaw[j] - smoothedTarget[j];
+      if (drop <= 1e-6) continue;
       const z = j * CELL;
       const cx = streamCenterX(z);
       const ci = cx / CELL;
-      const width = 2.4 + 2.4 * (z / SIZE);
-      const centerK = idx(Math.round(THREE.MathUtils.clamp(ci, 0, GRID - 1)), j);
-      const centerH = this.bedrock[centerK];
-      const target = Math.min(centerH, ceiling);
-      if (target < centerH - 1e-6) {
-        const drop = centerH - target;
-        const i0 = Math.max(0, Math.floor(ci - width * 1.8));
-        const i1 = Math.min(GRID - 1, Math.ceil(ci + width * 1.8));
-        for (let i = i0; i <= i1; i++) {
-          const d = Math.abs(i - ci);
-          const falloff = Math.exp(-Math.pow(d / width, 2));
-          this.bedrock[idx(i, j)] -= drop * falloff;
-        }
+      const width = Math.max(2.4 + 2.4 * (z / SIZE), drop * 1.5);
+      const i0 = Math.max(0, Math.floor(ci - width * 1.8));
+      const i1 = Math.min(GRID - 1, Math.ceil(ci + width * 1.8));
+      for (let i = i0; i <= i1; i++) {
+        const d = Math.abs(i - ci);
+        const falloff = Math.exp(-Math.pow(d / width, 2));
+        this.bedrock[idx(i, j)] -= drop * falloff;
       }
-      ceiling = target - MIN_DROP_PER_CELL;
+    }
+
+    // The two passes above fix the ALONG-channel slope (row to row) and widen
+    // the falloff in proportion to how big a correction THEY make - but measured
+    // live, a steep CROSS-channel wall could still remain even at a row needing
+    // almost no correction from either pass: the channel's fixed-width, fixed-
+    // amplitude carve cuts through whatever natural dune/ridge terrain happens
+    // to sit there, and wherever that surrounding ridge is unusually tall right
+    // at the channel (a real, ordinary feature of the noise-based terrain, nothing
+    // "wrong" with it on its own), the SAME narrow carve width produces a much
+    // steeper bank than it does through ordinary, lower terrain nearby - confirmed
+    // live at exactly such a spot: a ~76 degree cross-section where the centreline
+    // itself was already perfectly smooth row-to-row, so neither pass above had
+    // any reason to widen anything there.
+    //
+    // Rather than guess at which upstream cause produced a given steep bank, cap
+    // the actual RESULTING cross-slope directly, symmetrically outward from the
+    // centreline on each side, right after every other height-affecting pass
+    // above has already run - this catches a steep wall regardless of whether it
+    // came from the main carve, the ratchet correction, or the surrounding
+    // terrain's own noise, without needing to special-case any of them. Chosen to
+    // match (not tighten) the SAME slope the un-corrected channel carve already
+    // produces everywhere else (~35-36 degrees, i.e. roughly 1 vertical to 1.4
+    // horizontal) - a stretch this pass touches should read as an ordinary
+    // streambank, not a visibly different (unusually gentle OR unusually wide)
+    // one. Only ever lowers terrain (consistent with every other carving pass
+    // here), so it can't reintroduce a hump.
+    const MAX_CROSS_SLOPE = 0.7; // metres of height per metre of horizontal distance
+    const maxStepPerCell = MAX_CROSS_SLOPE * CELL;
+    for (let j = 0; j < GRID; j++) {
+      const z = j * CELL;
+      const cx = streamCenterX(z);
+      const ci = Math.round(THREE.MathUtils.clamp(cx / CELL, 0, GRID - 1));
+      const width = 2.4 + 2.4 * (z / SIZE);
+      // Wide enough to reach past any bank this could plausibly have created,
+      // narrow enough to never touch unrelated dune terrain far from the channel.
+      const reach = Math.ceil(width * 4);
+      // Walk outward from the centreline in both directions, capping each next
+      // cell's height at (previous cell's, already-capped, height + max step) -
+      // this can only ever pull a too-tall cell DOWN to the cap, never raise one.
+      let prev = this.bedrock[idx(ci, j)];
+      for (let i = ci + 1; i <= Math.min(GRID - 1, ci + reach); i++) {
+        const k = idx(i, j);
+        if (this.bedrock[k] > prev + maxStepPerCell) this.bedrock[k] = prev + maxStepPerCell;
+        prev = this.bedrock[k];
+      }
+      prev = this.bedrock[idx(ci, j)];
+      for (let i = ci - 1; i >= Math.max(0, ci - reach); i--) {
+        const k = idx(i, j);
+        if (this.bedrock[k] > prev + maxStepPerCell) this.bedrock[k] = prev + maxStepPerCell;
+        prev = this.bedrock[k];
+      }
     }
 
     // Steep ground exposes bare rock regardless of the headland mask's own falloff -

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=73';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=74';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -746,6 +746,55 @@ export class WaterSim {
           const amt = Math.min((carried - capacity) * Kd * dt, MAX_RATE * dt, carried);
           h[k] += amt;
           sediment[k] -= amt;
+        }
+      }
+    }
+
+    // Sand slumping: real loose sand can't hold an arbitrarily steep face - past
+    // its natural angle of repose it slides until it's shallow enough to stay
+    // put. Without this, ongoing erosion above has no slope limit of its own and
+    // can carve a bank arbitrarily steep over time - confirmed live: a stream
+    // bank generated at a stable, capped ~35 degree slope (see terrain.js's
+    // MAX_CROSS_SLOPE, the world-generation-time fix for the same underlying
+    // "tooth/staircase" report) had eroded back up to ~70+ degrees after only
+    // ~45s of simulated flow, entirely from this function running with no slope
+    // constraint of its own. Only affects low-hardness (sandy) ground - rock
+    // keeps whatever slope it already has, same as a real cliff face holds one
+    // sand never could.
+    const MAX_SAND_SLOPE = 0.7; // matches terrain.js's MAX_CROSS_SLOPE, so a
+                                 // slumped bank reads the same as a freshly-
+                                 // generated one, not steeper or gentler.
+    const maxStepPerCell = MAX_SAND_SLOPE * CELL;
+    const SLUMP_RATE = 0.5; // fraction of the excess moved per second - fast enough
+                             // that a freshly over-steepened bank visibly settles
+                             // within a second or two, gentle enough it never
+                             // fights actively-flowing water for the same cells.
+    for (let j = 1; j < N - 1; j++) {
+      for (let i = 1; i < N - 1; i++) {
+        const k = idx(i, j);
+        if (blocked[k]) continue;
+        const soft = 1 - hardness[k]; // 0 = rigid rock, 1 = loose sand
+        if (soft <= 0) continue;
+        const hk = h[k];
+        // +x and +z neighbours only (each undirected edge visited once per
+        // step) - move a fraction of whatever sits above the max-slope step
+        // from whichever side is higher toward whichever is lower, same as a
+        // real slump would.
+        const kR = idx(i + 1, j);
+        if (!blocked[kR]) {
+          const diff = hk - h[kR];
+          if (Math.abs(diff) > maxStepPerCell) {
+            const move = (Math.abs(diff) - maxStepPerCell) * 0.5 * Math.min(1, SLUMP_RATE * dt) * soft;
+            if (diff > 0) { h[k] -= move; h[kR] += move; } else { h[k] += move; h[kR] -= move; }
+          }
+        }
+        const kU = idx(i, j + 1);
+        if (!blocked[kU]) {
+          const diff = hk - h[kU];
+          if (Math.abs(diff) > maxStepPerCell) {
+            const move = (Math.abs(diff) - maxStepPerCell) * 0.5 * Math.min(1, SLUMP_RATE * dt) * soft;
+            if (diff > 0) { h[k] -= move; h[kU] += move; } else { h[k] += move; h[kU] -= move; }
+          }
         }
       }
     }

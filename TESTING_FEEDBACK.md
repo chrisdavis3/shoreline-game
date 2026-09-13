@@ -96,3 +96,61 @@ Verified: the bank reads as a clean, natural grid-scale staircase (no dense
 comb/teeth) at t~42s AND after 250s and 490s of fast-forwarded play, at the
 same zoom~60/near-spawn reproduction used to find it; `water.update` cost
 unchanged (~3.4ms/call).
+
+### 2026-09-13 — Stream-channel-specific staircase at high tide (FIXED - a THIRD, distinct cause)
+Follow-up again: the moisture fix above held on the open coastline (confirmed
+clean, including at `tideLevel=0.9`) but the STREAM CHANNEL specifically still
+showed a clear tooth/staircase pattern along its banks, running its whole
+length, at high tide (both a forced `tideLevel=0.9` and, confirmed separately,
+during an entirely ordinary natural tide cycle - `tideLevel` was never
+touched, the cycle's own peak was enough). Confined to the channel and never
+the open coast was the key clue that ruled out moisture/depth again.
+Isolated by hiding the water mesh entirely (`water.mesh.visible = false`):
+the staircase was fully present as raw exposed terrain, at ANY tide level -
+proof it's permanent bedrock geometry, not a moisture/tide interaction at all.
+Root cause: `terrain.js`'s stream-channel carving forces the channel
+centreline to descend monotonically toward the sea (so water always has
+somewhere downhill to go), by comparing each row only to the row immediately
+before it. Wherever a natural dune ridge crossed the channel's path steeply,
+the entire correction (measured live: ~5m of height change) landed on a
+single row through the channel's normal (narrow, ~2.4-cell) carve width - a
+~77 degree wall only a handful of fine-mesh vertices across, well past what
+the fixed mesh resolution renders as anything but a visible stair-step.
+Separately, ONGOING erosion in water.js's `_erode()` had no slope limit of
+its own, so it could - and did, confirmed live within ~45s of simulated flow -
+re-carve a freshly-generated, stable bank back up past 70 degrees even after
+the world-generation-time fix below, since real loose sand has an angle of
+repose and this simulation's sand didn't.
+Fixed in three parts: (1) terrain.js - spread the forced correction over as
+many preceding rows as needed (capped at 0.05m/row) instead of dumping it
+into one, so the ALONG-channel descent is always gradual; (2) terrain.js -
+widen the correction's carve width in proportion to how large a correction it
+is, and separately cap the actual resulting CROSS-channel slope directly
+(~35 degrees, matching the slope the channel's un-corrected carve already
+has everywhere else) after every other height pass has run, regardless of
+which pass would otherwise have produced a steeper wall; (3) water.js - added
+a "sand slumping" pass to `_erode()` that continuously pulls low-hardness
+(sandy) ground back under the same ~35 degree cap every step, so ongoing
+erosion can no longer re-steepen a bank over time the way it did before -
+rock (high hardness) is untouched, same as a real cliff face holds a slope
+sand never could. Also clamped the fine terrain mesh's Catmull-Rom
+interpolation to the local min/max of its own two bracketing samples: the
+slope-cap in (1)/(2) creates an exact kink where the capped ramp hands back
+off to the channel's natural curve, and an unclamped cubic fit rings past
+that kink (classic Gibbs overshoot) into a fresh, smaller spike even after
+the underlying data is fully smooth - the clamp is a no-op everywhere else
+(the overwhelming majority of the terrain, which has no such kink).
+Note: per the coordinator, a jump from ~6-8m (beach/dune) to ~48-68m
+(headland) over a short distance is geologically real for this location
+(checked against real elevation data) - this fix is scoped to the stream
+channel's own banks specifically (which should read as an ordinary,
+moderate streambank, not a cliff) and does not flatten the real headland
+cliffs elsewhere, which keep whatever slope their own formula gives them.
+Verified: cross-channel slope at the worst point measured ~44 degrees at
+t~40s (down from ~77-80), settling to ~38-45 degrees and holding there
+(not regrowing) after a full natural 260s tide cycle AND after a forced
+`tideLevel=0.9` held through its own peak (tideHeight 1.85) at t~555s;
+checked at the stream's source, ~30m downstream, and the open coastline
+(all clean); `water.update` cost ~3.7ms/call (was ~1.5-3.4ms across earlier
+checks - a modest, one-more-O(N²)-pass increase, still a small fraction of
+the frame budget).
