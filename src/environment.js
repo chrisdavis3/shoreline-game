@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=85';
-import { Noise2D } from './noise.js?v=85';
+} from './terrain.js?v=86';
+import { Noise2D } from './noise.js?v=86';
 
 const decoNoise = new Noise2D(555);
 
@@ -756,6 +756,15 @@ export function buildVillage(terrain) {
   const roofTones = ['#5c4a3d', '#4a4640', '#6b4f3a', '#54524a'];
   const wallMats = wallTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
   const roofMats = roofTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75, flatShading: true }));
+  const doorMat = new THREE.MeshStandardMaterial({ color: '#7a3b2e', roughness: 0.7 });
+  const frameMat = new THREE.MeshStandardMaterial({ color: '#f2ede0', roughness: 0.8 });
+
+  // The very first house placed becomes the "gorge door" building - the sole
+  // entry point to level 2 (see main.js's door-proximity prompt). Gets a real
+  // door mesh + a lighter frame around it so it visibly stands out from every
+  // other house in the village, plus its world-space door position/facing
+  // handed back to main.js for the interaction check.
+  let doorInfo = null;
 
   const TARGET = 26;
   let placed = 0, attempts = 0;
@@ -811,13 +820,37 @@ export function buildVillage(terrain) {
     roof.castShadow = true;
     house.add(roof);
 
+    const isDoorHouse = placed === 0;
+    if (isDoorHouse) {
+      const doorW = Math.min(w, 1.1), doorH = Math.min(houseH * 0.82, 1.9);
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.26, doorH + 0.22, 0.1), frameMat);
+      frame.position.set(0, doorH / 2, d / 2 + 0.02);
+      house.add(frame);
+      const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.12), doorMat);
+      door.position.set(0, doorH / 2, d / 2 + 0.05);
+      house.add(door);
+    }
+
     const y = (hL + hR + hF + hB) / 4;
+    const rotY = Math.random() * Math.PI * 2;
     house.position.set(warpX(x, z), y, z);
-    house.rotation.y = Math.random() * Math.PI * 2;
+    house.rotation.y = rotY;
     group.add(house);
+
+    if (isDoorHouse) {
+      // The door sits on the house's local +z face - rotate that offset by
+      // the house's actual facing to get its real world position, plus an
+      // extra step further out (along the same outward normal) as the spot
+      // the player needs to stand for the interaction to trigger.
+      const doorLocal = new THREE.Vector3(0, 0, d / 2);
+      const doorWorld = doorLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).add(house.position);
+      const standLocal = new THREE.Vector3(0, 0, d / 2 + 1.6);
+      const standWorld = standLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).add(house.position);
+      doorInfo = { x: doorWorld.x, z: doorWorld.z, standX: standWorld.x, standZ: standWorld.z, facing: rotY };
+    }
     placed++;
   }
-  return group;
+  return { group, door: doorInfo };
 }
 
 export function buildBirds(scene) {

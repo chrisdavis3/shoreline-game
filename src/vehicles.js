@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SIZE, warpX } from './terrain.js?v=85';
+import { SIZE, warpX } from './terrain.js?v=86';
 
 // Drivable construction vehicles: a bulldozer (blade grading) and an excavator
 // (fixed-reach bucket digging, independently-rotating cab). Deliberately
@@ -342,6 +342,8 @@ class VehicleBase {
 // conservation-of-mass model at a bigger footprint/rate, not a new mechanic.
 const DOZER_CUT_RATE = 1.1;    // metres of excess height the blade can remove per second
 const DOZER_GRADE_INTERVAL = 0.1; // tick cadence - frequent enough to read as continuous
+const DOZER_GRADE_TOL = 0.006; // ignore bumps/dips smaller than this - not "nothing ever happens"
+const DOZER_LOAD_CAP = 1.4;    // cubic-ish "metres" of spoil the blade can carry between a cut and the next dip
 
 export class Bulldozer {
   constructor(x, z, heading, terrain) {
@@ -364,6 +366,7 @@ export class Bulldozer {
     this.bladeMesh = built.blade;
     this._bladeRestY = built.blade.position.y;
     this._gradeAccum = 0;
+    this._bladeLoad = 0; // spoil currently carried in front of the blade, cut from a mound and not yet all shed
     // Blade starts UP/inactive - grading is now an explicit toggle ("a dig
     // button which moves the shovel down to move the earth, that stays on"),
     // not automatic just from driving forward.
@@ -380,7 +383,18 @@ export class Bulldozer {
     this.base._updateMovement(dt, input, terrain, water);
     // Toggle, not hold - one press drops the blade and it stays down until
     // pressed again, same as a real blade-control lever.
-    if (input.digPressed) this.bladeDown = !this.bladeDown;
+    if (input.digPressed) {
+      this.bladeDown = !this.bladeDown;
+      // Lifting the blade drops whatever it was still carrying right where it
+      // stands, rather than letting it vanish or ride along invisibly forever.
+      if (!this.bladeDown && this._bladeLoad > 0.0004) {
+        const fwd = this.base.worldForward();
+        const bx = this.base.pos.x + fwd.x * this.bladeOffset, bz = this.base.pos.z + fwd.z * this.bladeOffset;
+        terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen * 1.2, this.bladeWidth, this._bladeLoad, 0);
+        terrain.markDirty();
+        this._bladeLoad = 0;
+      }
+    }
     // Ease the visible blade mesh toward its up/down pose rather than
     // snapping, so the toggle reads as a real mechanical action.
     const targetY = this._bladeRestY - (this.bladeDown ? 0.22 : 0);
@@ -404,26 +418,45 @@ export class Bulldozer {
     const bx = this.base.pos.x + fwd.x * this.bladeOffset, bz = this.base.pos.z + fwd.z * this.bladeOffset;
     const groundHere = terrain.sampleHeightBilinear(this.base.pos.x, this.base.pos.z);
     const groundAhead = terrain.sampleHeightBilinear(bx, bz);
-    const diff = groundAhead - groundHere; // >0 = a mound in the blade's way
-    if (diff <= 0.02) return null;
+    const diff = groundAhead - groundHere; // >0 = a mound in the blade's way, <0 = a dip
 
-    const cut = Math.min(diff, DOZER_CUT_RATE * tick);
-    const removed = -terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen, this.bladeWidth, -cut, 1.0);
-    if (removed < 0.0004) return null;
+    if (diff > DOZER_GRADE_TOL) {
+      const cut = Math.min(diff, DOZER_CUT_RATE * tick);
+      const removed = -terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen, this.bladeWidth, -cut, 1.0);
+      if (removed < 0.0004) return null;
 
-    // Half the shoved volume piles up just past the blade (pushed ahead of
-    // it); a quarter spills off each side - roughly how a real blade load
-    // sheds material once it can't carry any more.
-    const pileDist = this.bladeOffset + this.bladeLen * 0.95;
-    const px = this.base.pos.x + fwd.x * pileDist, pz = this.base.pos.z + fwd.z * pileDist;
-    terrain.scoopDeform(px, pz, fwd.x, fwd.z, this.bladeLen * 1.3, this.bladeWidth * 1.1, removed * 0.5, 0);
-    const sideX = -fwd.z, sideZ = fwd.x;
-    for (const side of [-1, 1]) {
-      const spx = bx + sideX * side * this.bladeWidth * 0.95, spz = bz + sideZ * side * this.bladeWidth * 0.95;
-      terrain.scoopDeform(spx, spz, fwd.x, fwd.z, this.bladeLen * 0.9, this.bladeWidth * 0.6, removed * 0.25, 0);
+      // A real blade doesn't shed its whole load the instant it cuts one - some
+      // of it rides along in front, ready to fill the next dip (see the < 0
+      // branch below); what doesn't fit piles up just past the blade (half)
+      // or spills off to either side (a quarter each), same as before.
+      const carry = Math.min(DOZER_LOAD_CAP - this._bladeLoad, removed * 0.45);
+      this._bladeLoad += carry;
+      const shed = removed - carry;
+      const pileDist = this.bladeOffset + this.bladeLen * 0.95;
+      const px = this.base.pos.x + fwd.x * pileDist, pz = this.base.pos.z + fwd.z * pileDist;
+      terrain.scoopDeform(px, pz, fwd.x, fwd.z, this.bladeLen * 1.3, this.bladeWidth * 1.1, shed * 0.5, 0);
+      const sideX = -fwd.z, sideZ = fwd.x;
+      for (const side of [-1, 1]) {
+        const spx = bx + sideX * side * this.bladeWidth * 0.95, spz = bz + sideZ * side * this.bladeWidth * 0.95;
+        terrain.scoopDeform(spx, spz, fwd.x, fwd.z, this.bladeLen * 0.9, this.bladeWidth * 0.6, shed * 0.25, 0);
+      }
+      terrain.markDirty();
+      return { x: bx, y: groundHere, z: bz, amount: cut };
     }
-    terrain.markDirty();
-    return { x: bx, y: groundHere, z: bz, amount: cut };
+
+    if (diff < -DOZER_GRADE_TOL && this._bladeLoad > 0.0004) {
+      // A dip, and the blade's carrying spoil from an earlier cut - drop
+      // enough of it here to level the dip out, same scoopDeform primitive
+      // just adding instead of removing. This is what actually lets a pass
+      // with the blade down grade a smooth ramp rather than only ever cut.
+      const fill = Math.min(-diff, DOZER_CUT_RATE * tick, this._bladeLoad);
+      this._bladeLoad -= fill;
+      terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen, this.bladeWidth, fill, 0);
+      terrain.markDirty();
+      return { x: bx, y: groundHere, z: bz, amount: fill };
+    }
+
+    return null;
   }
 }
 

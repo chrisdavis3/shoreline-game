@@ -2,19 +2,19 @@ import * as THREE from 'three';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=85';
-import { WaterSim } from './water.js?v=85';
+} from './terrain.js?v=86';
+import { WaterSim } from './water.js?v=86';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=85';
-import { scatterRocks, Rock } from './rocks.js?v=85';
-import { Player } from './player.js?v=85';
-import { AudioSystem } from './audio.js?v=85';
-import { Particles } from './particles.js?v=85';
-import { Debris } from './debris.js?v=85';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=85';
-import { Bulldozer, Excavator } from './vehicles.js?v=85';
+} from './environment.js?v=86';
+import { scatterRocks, Rock } from './rocks.js?v=86';
+import { Player } from './player.js?v=86';
+import { AudioSystem } from './audio.js?v=86';
+import { Particles } from './particles.js?v=86';
+import { Debris } from './debris.js?v=86';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=86';
+import { Bulldozer, Excavator } from './vehicles.js?v=86';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,7 +34,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 85;
+const APP_VERSION = 86;
 
 // ---------- renderer / scene / camera ----------
 
@@ -225,12 +225,15 @@ if (savedData) {
 // staircase). Placing decoration first meant grass/pebbles near the banks
 // were pinned to the PRE-erosion height, then the ground moved out from
 // under them during priming - "grass floating in the air" by the river.
+let villageDoor = null;
 if (ACTIVE_LEVEL_ID === 'level2') {
   scene.add(buildSkirtLevel2(terrain));
   scene.add(scatterPropsLevel2(terrain));
 } else {
   scene.add(buildSkirt(terrain));
-  scene.add(buildVillage(terrain));
+  const village = buildVillage(terrain);
+  scene.add(village.group);
+  villageDoor = village.door;
   scene.add(scatterProps(terrain));
 }
 
@@ -1139,6 +1142,58 @@ function updateVehicleUI() {
   }
 }
 
+// ---------- village door (the sole route into level 2) ----------
+
+// The gorge door only appears in level 1, on the one hero house buildVillage()
+// singled out (see environment.js) - and even there, not until the player's
+// been playing a little while, so it's a thing to stumble on rather than an
+// upfront choice (that's the whole point of replacing the old boot-time level
+// picker with this). Re-uses the picker's own markup/styling (#levelSelect),
+// repointed at a single "enter the gorge" card instead of the two-level
+// chooser it used to be - see index.html/artifact.html.
+const DOOR_UNLOCK_SECONDS = 90;
+const DOOR_RANGE = 2.6;
+const doorPopupEl = document.getElementById('levelSelect');
+let doorPopupShown = false;
+let doorDismissed = false;
+
+function nearVillageDoor() {
+  if (!villageDoor || ACTIVE_LEVEL_ID !== 'level1') return false;
+  const dx = villageDoor.standX - player.pos.x, dz = villageDoor.standZ - player.pos.z;
+  return Math.hypot(dx, dz) < DOOR_RANGE;
+}
+
+function updateDoorUI(elapsedTime) {
+  if (!villageDoor || ACTIVE_LEVEL_ID !== 'level1' || drivingVehicle) return;
+  const unlocked = elapsedTime > DOOR_UNLOCK_SECONDS;
+  const near = unlocked && nearVillageDoor();
+  if (near && !doorPopupShown && !doorDismissed) {
+    doorPopupShown = true;
+    if (doorPopupEl) doorPopupEl.style.display = 'flex';
+  } else if (!near) {
+    doorDismissed = false; // walking away resets it, so stepping back up shows it again
+  }
+}
+
+if (doorPopupEl) {
+  const gorgeCard = document.getElementById('gorgeCard');
+  const dismissBtn = document.getElementById('lsDismiss');
+  if (gorgeCard) {
+    gorgeCard.addEventListener('click', () => {
+      saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID });
+      localStorage.setItem('shoreline_active_level', 'level2');
+      location.reload();
+    });
+  }
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => {
+      doorPopupEl.style.display = 'none';
+      doorPopupShown = false;
+      doorDismissed = true;
+    });
+  }
+}
+
 // ---------- sound toggle ----------
 
 const soundBtn = document.getElementById('sound');
@@ -1183,16 +1238,21 @@ if (resetBtn) {
   });
 }
 
-// Returns to the level-select screen (index.html/artifact.html's inline
-// bootstrap script) without touching either level's save - just clears which
-// level is "active" so the next load shows the picker again.
+// Returns to Mawgan Porth (level 1, the only level the game ever boots
+// straight into - see index.html/artifact.html's inline bootstrap script)
+// without touching either level's save - just clears which level is
+// "active" so the next load falls back to its level-1 default.
 const levelBtn = document.getElementById('levelBtn');
 if (levelBtn) {
+  // Level 1 has no "change level" destination any more - the door is the only
+  // way there. Only level 2 (reached through it) needs a way back.
+  if (ACTIVE_LEVEL_ID !== 'level2') levelBtn.style.display = 'none';
+  else levelBtn.textContent = 'Back to Mawgan Porth';
   levelBtn.addEventListener('click', () => {
     // Unlike reset, this keeps (rather than clears) the current level's save -
     // save explicitly first (bypassing the `resetting` guard, which only
     // exists to stop an in-flight autosave from undoing a deliberate clearSave)
-    // then just forget which level is "active" so the next load shows the picker.
+    // then just forget which level is "active" so the next load defaults to level 1.
     saveState({ terrain, water, rocks, player, levelId: ACTIVE_LEVEL_ID });
     localStorage.removeItem('shoreline_active_level');
     location.reload();
@@ -1289,6 +1349,7 @@ function stepFrame(dt, elapsedTime) {
   birds.update(elapsedTime);
   updateTideUI();
   updateVehicleUI();
+  updateDoorUI(elapsedTime);
   hints.update(dt);
 
   const audioSubject = drivingVehicle || player;
@@ -1324,6 +1385,7 @@ window.__game = {
     touchDigHeld, touchSmoothHeld,
     drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
     vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
+    villageDoor, doorPopupShown,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,

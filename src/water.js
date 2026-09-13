@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=85';
+} from './terrain.js?v=86';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
