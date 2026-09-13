@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SIZE, warpX } from './terrain.js?v=101';
+import { SIZE, warpX } from './terrain.js?v=102';
 
 // Drivable construction vehicles: a bulldozer (blade grading) and an excavator
 // (fixed-reach bucket digging, independently-rotating cab). Deliberately
@@ -318,8 +318,13 @@ class VehicleBase {
     const follow = this._sampleFollow(terrain);
     const snap = Math.min(1, 12 * dt);
     this.pos.y += (follow.groundY + this.deckY - this.pos.y) * snap;
-    const targetPitch = THREE.MathUtils.clamp(-Math.atan(follow.climbSlope), -0.32, 0.32);
-    const targetRoll = THREE.MathUtils.clamp(Math.atan(follow.rollSlope), -0.3, 0.3);
+    // Clamped much tighter than the actual terrain slope can get near the
+    // river/falls (confirmed live: a vehicle sitting on a rough patch near
+    // the bank snapping to the old +-0.32/0.3 rad clamp read as visibly
+    // broken, not just "on a slope") - reads as settling onto the ground,
+    // never as tipping over.
+    const targetPitch = THREE.MathUtils.clamp(-Math.atan(follow.climbSlope), -0.12, 0.12);
+    const targetRoll = THREE.MathUtils.clamp(Math.atan(follow.rollSlope), -0.1, 0.1);
     this._pitch += (targetPitch - this._pitch) * snap;
     this._roll += (targetRoll - this._roll) * snap;
     this._setMeshTransform();
@@ -357,7 +362,7 @@ export class Bulldozer {
     this.cameraDist = 16;
     this.base = new VehicleBase(x, z, heading, terrain, built, {
       maxForwardSpeed: 2.7, maxReverseSpeed: 1.5, accel: 1.15, decel: 2.0,
-      maxTurnRate: 0.85, climbEase: 0.24, climbStall: 0.62, maxWaterDepth: 0.5,
+      maxTurnRate: 0.85, climbEase: 0.45, climbStall: 1.0, maxWaterDepth: 0.5,
     });
     this.mesh = this.base.mesh;
     this.bladeOffset = built.bladeOffset;
@@ -507,7 +512,7 @@ export class Excavator {
     this.cameraDist = 15;
     this.base = new VehicleBase(x, z, heading, terrain, built, {
       maxForwardSpeed: 2.2, maxReverseSpeed: 1.3, accel: 1.0, decel: 1.9,
-      maxTurnRate: 0.8, climbEase: 0.24, climbStall: 0.6, maxWaterDepth: 0.5,
+      maxTurnRate: 0.8, climbEase: 0.45, climbStall: 1.0, maxWaterDepth: 0.5,
     });
     this.mesh = this.base.mesh;
     this.cabGroup = built.cabGroup;

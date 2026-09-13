@@ -2,19 +2,19 @@ import * as THREE from 'three';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=101';
-import { WaterSim } from './water.js?v=101';
+} from './terrain.js?v=102';
+import { WaterSim } from './water.js?v=102';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=101';
-import { scatterRocks, Rock } from './rocks.js?v=101';
-import { Player } from './player.js?v=101';
-import { AudioSystem } from './audio.js?v=101';
-import { Particles } from './particles.js?v=101';
-import { Debris } from './debris.js?v=101';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=101';
-import { Bulldozer, Excavator } from './vehicles.js?v=101';
+} from './environment.js?v=102';
+import { scatterRocks, Rock } from './rocks.js?v=102';
+import { Player } from './player.js?v=102';
+import { AudioSystem } from './audio.js?v=102';
+import { Particles } from './particles.js?v=102';
+import { Debris } from './debris.js?v=102';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=102';
+import { Bulldozer, Excavator } from './vehicles.js?v=102';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,7 +34,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 101;
+const APP_VERSION = 102;
 
 // ---------- renderer / scene / camera ----------
 
