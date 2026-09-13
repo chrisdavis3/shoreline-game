@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=72';
-import { Noise2D } from './noise.js?v=72';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx } from './terrain.js?v=73';
+import { Noise2D } from './noise.js?v=73';
 
 const decoNoise = new Noise2D(555);
 
@@ -359,18 +359,23 @@ export function scatterProps(terrain) {
   for (let n = 0; n < cliffGrassCount * 6 && cgc < cliffGrassCount; n++) {
     const cx = Math.random() * SIZE, cz = Math.random() * SIZE;
     const y = terrain.sampleHeightBilinear(cx, cz);
-    // Same south/north asymmetry as terrain.js's own clifftopGrass and this
-    // file's buildSkirt: a flat 4.5/0.42 cutoff here meant the south hill's
-    // vertex-COLOUR was already grassed much lower (see terrain.js) but these
-    // actual 3D grass-blade instances still only appeared above the same old
-    // uniform threshold - so the south hill's lower slopes read as a flat
-    // green-painted surface with no real blade texture, while the colour and
-    // the geometry disagreed about how grassy it was. Bias both thresholds by
-    // the same rockAllow curve so the blades actually cover what the colour
-    // pass already promised.
-    const northT = THREE.MathUtils.clamp(cx / SIZE, 0, 1);
-    const northSmooth = northT * northT * (3 - 2 * northT);
-    const rockAllow = 0.22 + 0.78 * northSmooth;
+    // Grassy/gentle near the stream (real low, open drainage ground - a river
+    // doesn't cut through the tallest cliff, the land is low there BECAUSE
+    // that's where it drains) and rockier away from it - tied to actual
+    // distance from the stream's path, not absolute north/south position,
+    // consistent with the same correction in buildSkirt above and in
+    // terrain.js's own headland formula. A flat 4.5/0.42 cutoff here meant the
+    // grassy hill's vertex-COLOUR was already grassed much lower (see
+    // terrain.js) but these actual 3D grass-blade instances still only
+    // appeared above the same old uniform threshold - so the hill's lower
+    // slopes read as a flat green-painted surface with no real blade texture,
+    // while the colour and the geometry disagreed about how grassy it was.
+    // Bias both thresholds by the same rockAllow curve so the blades actually
+    // cover what the colour pass already promised.
+    const distFromStreamHere = Math.abs(cx - streamCenterX(cz));
+    const nearStreamT = THREE.MathUtils.clamp(1 - distFromStreamHere / 34, 0, 1);
+    const nearStreamSmooth = nearStreamT * nearStreamT * (3 - 2 * nearStreamT);
+    const rockAllow = 0.22 + 0.78 * (1 - nearStreamSmooth);
     const southGrassBoost = 1 - rockAllow;
     const heightThresh = 4.5 - 3.2 * southGrassBoost;
     // A real grassy hill (south end) is still fairly steep by nature - it's
@@ -554,9 +559,22 @@ export function buildSkirt(terrain) {
       const x = xs[ix];
       const k = jz * nx + ix;
       const dxOut = Math.max(0, left - x, x - right);
+      // Distance from the stream's own path at this z - used both for the
+      // narrow upstream notch (z<0 only) and, more broadly, for a real,
+      // stated correction: a river finds the LOWEST ground, it doesn't cut a
+      // narrow gap through the tallest cliff - the land is low there BECAUSE
+      // that's where water drains. Confirmed directly against the real map:
+      // the stream's own headland is gentle, low, open ground; the dramatic
+      // dark rock is the OTHER headland, unrelated to drainage. `nearStream`
+      // (0 = right on the stream's path, 1 = well clear of it) drives both
+      // the height dampening below and the colour/jaggedness pass.
+      const distFromStream = Math.abs(x - streamXHere);
+      const nearStreamWidth = 34;
+      const nearStreamT = THREE.MathUtils.clamp(1 - distFromStream / nearStreamWidth, 0, 1);
+      const nearStream = nearStreamT * nearStreamT * (3 - 2 * nearStreamT);
+
       let dzLandEff = dzLand;
       if (dzLand > 0) {
-        const distFromStream = Math.abs(x - streamXHere);
         const notchWidth = 9 + dzLand * 0.25; // widens gradually further upstream
         const notchFactor = THREE.MathUtils.clamp(1 - distFromStream / notchWidth, 0, 1);
         const eased = notchFactor * notchFactor * (3 - 2 * notchFactor);
@@ -564,17 +582,10 @@ export function buildSkirt(terrain) {
       }
       const outside = Math.max(dxOut, dzLandEff);
 
-      // The two real headlands are NOT symmetric (confirmed against an
-      // eye-level reference photo showing both in one frame): the south end
-      // (low x, Berryl's Point) is a smooth, rounded, mostly grassy hill;
-      // the north end (high x, Trenance Point, where the stream enters) is
-      // the genuinely jagged, fractured dark rock cliff. `rockJagged` fades
-      // the fractured-silhouette ridge noise (and, below, the exposed-rock
-      // strata/colour) down toward the south so that side reads as a rounded,
-      // grassy hillside instead of an equally shattered dark cliff. Computed
-      // once here so both the height rise and the colour pass below share it.
-      const northT = THREE.MathUtils.clamp(x / SIZE, 0, 1);
-      const rockJagged = 0.3 + 0.7 * (northT * northT * (3 - 2 * northT));
+      // Jaggedness fades toward smooth/rounded near the stream (real low,
+      // gentle drainage ground) and toward the shattered dark-rock cliff away
+      // from it - the opposite of tying this to absolute north/south position.
+      const rockJagged = 0.25 + 0.75 * (1 - nearStream);
 
       let y;
       if (outside <= 0 && dzSea <= 0) {
@@ -593,7 +604,10 @@ export function buildSkirt(terrain) {
         // much slower continued climb into believable distant hilltops beyond it.
         const nearRise = Math.pow(Math.min(1, outside / 15), 0.5);
         const farRise = Math.pow(Math.min(1, outside / (SIZE * 1.4)), 0.75);
-        const rise = nearRise * 0.75 + farRise * 0.5;
+        // Height itself (not just colour/jaggedness) drops off near the stream -
+        // real low, open drainage ground, not a valley merely painted grassy on
+        // top of the same tall cliff mass.
+        const rise = (nearRise * 0.75 + farRise * 0.5) * (1 - nearStream * 0.65);
 
         // Domain-warp the sampling coordinate before any ridge noise. Without
         // this, every ridge's amplitude is purely a function of distance from
@@ -710,6 +724,88 @@ export function buildSkirt(terrain) {
   mesh.receiveShadow = false;
   mesh.renderOrder = -1;
   return mesh;
+}
+
+// Every single reference photo/map of the real place shows a village sitting
+// right on the clifftop above the beach (Mawgan Porth itself, plus Bedruthan
+// Hotel and Scarlet Hotel further along) - the game had precisely zero trace
+// of it, which reads as an obviously empty, wrong landscape next to any real
+// photo no matter how good the sand/cliffs/water get. Placed on the dune band
+// just inland of the beach (t < 0.20, where terrain.js's own cliffOnset is
+// still zero everywhere - guaranteed flat, headland-free ground across the
+// whole width) on the side AWAY from the stream, matching the real map (the
+// village and hotels sit on the opposite side of the bay from the tidal
+// creek). Simple low-poly box-plus-pitched-roof houses, not an attempt at
+// real architecture - the point is that a cluster of rooflines exists at all
+// where the real photos show one, not that any single building is detailed.
+export function buildVillage(terrain) {
+  const group = new THREE.Group();
+  const wallTones = ['#e8ddc8', '#d9cdb3', '#c9c2ab', '#e2d4bc', '#cfd0c4'];
+  const roofTones = ['#5c4a3d', '#4a4640', '#6b4f3a', '#54524a'];
+  const wallMats = wallTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
+  const roofMats = roofTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75, flatShading: true }));
+
+  const TARGET = 26;
+  let placed = 0, attempts = 0;
+  while (placed < TARGET && attempts < TARGET * 40) {
+    attempts++;
+    const x = SIZE * 0.06 + Math.random() * SIZE * 0.58; // west/centre band, away from the stream
+    const z = 2 + Math.random() * 17; // the dune band - flat, headland-free at every x
+    const distFromStream = Math.abs(x - streamCenterX(z));
+    if (distFromStream < 14) continue; // keep clear of the stream's own corridor
+    if (terrain.blocked[idx(Math.round(x / CELL), Math.round(z / CELL))]) continue;
+
+    // Crude local slope check (a house needs a foundation, not a hillside) -
+    // sample height at the corners of the footprint and reject anything too
+    // uneven rather than let a house visibly float or clip into the ground.
+    const w = 2.4 + Math.random() * 2.2, d = 2.2 + Math.random() * 2.0;
+    const hC = terrain.sampleHeightBilinear(x, z);
+    const hL = terrain.sampleHeightBilinear(x - w / 2, z);
+    const hR = terrain.sampleHeightBilinear(x + w / 2, z);
+    const hF = terrain.sampleHeightBilinear(x, z - d / 2);
+    const hB = terrain.sampleHeightBilinear(x, z + d / 2);
+    const spread = Math.max(hL, hR, hF, hB, hC) - Math.min(hL, hR, hF, hB, hC);
+    if (spread > 0.9) continue;
+
+    // Avoid stacking two houses too close together.
+    let tooClose = false;
+    for (const h of group.children) {
+      if (Math.hypot(h.position.x - x, h.position.z - z) < 3.2) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+
+    const houseH = 2.1 + Math.random() * 1.1;
+    const wallMat = wallMats[Math.floor(Math.random() * wallMats.length)];
+    const roofMat = roofMats[Math.floor(Math.random() * roofMats.length)];
+    const house = new THREE.Group();
+
+    const wallGeo = new THREE.BoxGeometry(w, houseH, d);
+    const walls = new THREE.Mesh(wallGeo, wallMat);
+    walls.position.y = houseH / 2;
+    walls.castShadow = true;
+    walls.receiveShadow = true;
+    house.add(walls);
+
+    // A 3-segment cylinder is a triangular prism - laid on its side (rotated
+    // onto the z axis) it's exactly a pitched gable roof, no custom geometry
+    // needed. The default 3-segment cylinder has a flat face down already
+    // apex-up, so no extra roll is needed once it's rotated onto its side.
+    const roofLen = Math.max(w, d) * 1.12;
+    const roofGeo = new THREE.CylinderGeometry(Math.min(w, d) * 0.62, Math.min(w, d) * 0.62, roofLen, 3);
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.rotation.z = Math.PI / 2;
+    if (d > w) roof.rotation.y = Math.PI / 2;
+    roof.position.y = houseH + Math.min(w, d) * 0.3;
+    roof.castShadow = true;
+    house.add(roof);
+
+    const y = (hL + hR + hF + hB) / 4;
+    house.position.set(warpX(x, z), y, z);
+    house.rotation.y = Math.random() * Math.PI * 2;
+    group.add(house);
+    placed++;
+  }
+  return group;
 }
 
 export function buildBirds(scene) {

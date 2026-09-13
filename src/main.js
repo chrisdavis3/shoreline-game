@@ -1,13 +1,13 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=72';
-import { WaterSim } from './water.js?v=72';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt } from './environment.js?v=72';
-import { scatterRocks, Rock } from './rocks.js?v=72';
-import { Player } from './player.js?v=72';
-import { AudioSystem } from './audio.js?v=72';
-import { Particles } from './particles.js?v=72';
-import { Debris } from './debris.js?v=72';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=72';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=73';
+import { WaterSim } from './water.js?v=73';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=73';
+import { scatterRocks, Rock } from './rocks.js?v=73';
+import { Player } from './player.js?v=73';
+import { AudioSystem } from './audio.js?v=73';
+import { Particles } from './particles.js?v=73';
+import { Debris } from './debris.js?v=73';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=73';
 
 // ---------- renderer / scene / camera ----------
 
@@ -100,6 +100,7 @@ const sky = buildSky(scene);
 const ocean = buildOcean(water.uniforms);
 scene.add(ocean.mesh);
 scene.add(buildSkirt(terrain));
+scene.add(buildVillage(terrain));
 
 const props = scatterProps(terrain);
 scene.add(props);

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=72';
+import { Noise2D } from './noise.js?v=73';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -435,8 +435,35 @@ export class Terrain {
         const streamGapDist = Math.abs(i - streamCenterX(z) / CELL);
         const streamGapWidth = 7 + 6 * t;
         const streamExemption = THREE.MathUtils.clamp(1 - streamGapDist / streamGapWidth, 0, 1);
-        const headland = cliffPotential * cliffOnset * (1 - streamExemption * 0.92);
-        hLand += headland * (11.5 + n1.fbm(i * 0.06, j * 0.06, 3) * 1.8) * Math.max(0.55, 1 - t * 0.18);
+        // A real river doesn't cut a narrow slot through the tallest part of a
+        // cliff - it finds the lowest ground, because that's WHY the land is
+        // low there in the first place. This end of the bay (the stream sits
+        // close to i=GRID-1, the same end `edgeDist` already scores as the
+        // tallest cliff) was reading backwards from the real map/photos: the
+        // real headland by the stream mouth is gentle, low, open farmland -
+        // the dramatic rock is the OTHER headland, which has nothing to do
+        // with drainage. `streamExemption` above only ever cleared a ~10-cell
+        // channel-width gap through full-height cliff on both sides; this
+        // widens that into a genuine broad valley (~30 cells) so the whole
+        // neighbourhood of the stream reads as low ground, not just its exact
+        // centreline.
+        const streamValleyDist = streamGapDist;
+        const streamValleyWidth = 30;
+        const streamValleyT = THREE.MathUtils.clamp(1 - streamValleyDist / streamValleyWidth, 0, 1);
+        const streamValley = streamValleyT * streamValleyT * (3 - 2 * streamValleyT);
+        const headland = cliffPotential * cliffOnset * (1 - streamExemption * 0.92) * (1 - streamValley * 0.72);
+        // Checked against real elevation data (open-elevation.com samples around
+        // the actual headlands, cross-checked against a web search putting both
+        // Berryl's Point and Trenance Point at "over 50 metres"): the beach/dune
+        // area itself sits at only ~6-8m, and the headlands reach ~48-68m - a
+        // real height difference of ~45-60m, not the ~13m this constant gave.
+        // The simulated grid only covers the walkable NEAR side of each
+        // headland (the decorative skirt in environment.js continues rising
+        // beyond it toward the real summit), so it doesn't need to reach the
+        // full 50m+ by itself - raised enough that the two read as continuous
+        // rather than the skirt suddenly having to make up a huge, visible gap
+        // right at the seam.
+        hLand += headland * (19 + n1.fbm(i * 0.06, j * 0.06, 3) * 2.6) * Math.max(0.55, 1 - t * 0.18);
 
         const coastline = coastT(i);
         // Fine detail noise, larger inland (soft dune texture) smaller on the wide
@@ -671,22 +698,26 @@ export class Terrain {
     const base = this._cBase.copy(P.sand).lerp(grassTone, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
     base.lerp(P.dryGrass, 0.15 * Math.max(0, 1 - t * 3));
 
-    // The two headlands are NOT symmetric in reality (confirmed against an
-    // eye-level reference photo showing both in one frame): the south end
-    // (i=0, "Berryl's Point") is a smooth, rounded, mostly GRASSY hill with
-    // only a small rock outcrop right at its base near the water; the north
-    // end (i=GRID-1, "Trenance Point", where the stream enters) is the
-    // genuinely dark, jagged, fractured rock cliff. The hardness field itself
-    // (headland + outcrop + slope-exposure, all baked together in _generate())
-    // stays untouched here - that field also feeds water.js's erosion/flux -
-    // this only biases how much of that hardness actually SHOWS as bare rock
-    // vs. how far grass is allowed to creep down the slope, purely a display
-    // decision. rockAllow: low near i=0 (most would-be rock repainted as
-    // grass below), 1.0 near i=GRID-1 (full rock, unchanged).
-    const northT = THREE.MathUtils.clamp(fi / RENDER_SUBDIV / (GRID - 1), 0, 1);
-    const northSmooth = northT * northT * (3 - 2 * northT);
-    const rockAllow = 0.22 + 0.78 * northSmooth;
-    const southGrassBoost = 1 - rockAllow; // how much extra grass-friendliness the south hill gets
+    // The two headlands are NOT symmetric in reality, but not for the reason
+    // first assumed here: a real river finds the LOWEST ground, it doesn't cut
+    // a narrow gap through the tallest cliff - the land is low and gentle right
+    // around the stream's mouth precisely BECAUSE that's where it drains. The
+    // dramatic dark, jagged, fractured rock cliff is the OTHER headland, well
+    // clear of the stream, unrelated to drainage. This was tied to absolute
+    // north/south position before (assuming the stream's own end was the rocky
+    // one), which is exactly backwards - now tied to actual distance from the
+    // stream's real path. The hardness field itself (headland + outcrop +
+    // slope-exposure, all baked together in _generate()) stays untouched here -
+    // that field also feeds water.js's erosion/flux - this only biases how much
+    // of that hardness actually SHOWS as bare rock vs. how far grass is allowed
+    // to creep down the slope, purely a display decision. rockAllow: low near
+    // the stream (most would-be rock repainted as grass below), 1.0 well clear
+    // of it (full rock, unchanged).
+    const distFromStreamHere = Math.abs(fx * CELL - streamCenterX(fz * CELL));
+    const nearStreamT = THREE.MathUtils.clamp(1 - distFromStreamHere / 34, 0, 1);
+    const nearStreamSmooth = nearStreamT * nearStreamT * (3 - 2 * nearStreamT);
+    const rockAllow = 0.22 + 0.78 * (1 - nearStreamSmooth);
+    const southGrassBoost = 1 - rockAllow; // how much extra grass-friendliness the low ground near the stream gets
 
     const grassPatch = THREE.MathUtils.clamp((n1.fbm(fx * 0.15 + 300, fz * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
     const clifftopHeightThresh = 4.5 - 3.2 * southGrassBoost; // grass starts much lower up the south hill
