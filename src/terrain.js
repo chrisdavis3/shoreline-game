@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=88';
+import { Noise2D } from './noise.js?v=91';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -70,12 +70,23 @@ function streamCenterXLevel1(z) {
 // rather than branching level 1's own (heavily-tuned, Mawgan-Porth-specific)
 // formulas - see setActiveLevel above.
 export const L2_LIP_X = SIZE * 0.46;      // waterfall lip, world x (metres)
-export const L2_T_FALL0 = 0.09;           // t where the near-vertical drop begins
-export const L2_T_FALL1 = 0.20;           // t where it lands in the base pool
+export const L2_T_FALL0 = 0.17;           // t where the near-vertical drop begins
+export const L2_T_FALL1 = 0.28;           // t where it lands in the base pool
 export const L2_TOP_H = 52;               // mountainside height above the falls
 export const L2_POOL_H = 7;               // landing-pool floor height
 export const L2_LAKE_H = 1.3;             // still lake level at the valley's exit
 export const L2_WALL_HEIGHT = 55;         // added valley-wall rise above the floor
+
+// A small lake sitting in the (now-enlarged) plateau above the falls, feeding
+// them - see _generateLevel2's halfWidth/lake-basin carve below. Its own
+// water source (see water.js's _seedSource) sits inside the basin rather than
+// right at the lip, so the falls are just wherever the lake's rim happens to
+// be lowest: dig a new low point in the rim elsewhere and the same real flow
+// sim should send water there too, no separate mechanic needed.
+export const L2_LAKE_CENTER_Z = L2_T_FALL0 * SIZE * 0.42;
+export const L2_LAKE_RADIUS_Z = L2_T_FALL0 * SIZE * 0.36;
+export const L2_LAKE_RADIUS_X = 15;
+export const L2_LAKE_DEPTH = 4;
 
 function streamCenterXLevel2(z) {
   const t = z / SIZE;
@@ -840,6 +851,10 @@ export class Terrain {
         const x = i * CELL, z = j * CELL;
         const t = z / SIZE; // 0 = high mountainside, 1 = the lake at the valley's exit
 
+        const cx = streamCenterXLevel2(z);
+        const ci = cx / CELL;
+        const distCells = Math.abs(i - ci);
+
         // Valley-floor centreline elevation: flat-ish high mountain plateau
         // above the falls, a steep (mostly near-vertical in the middle) drop
         // through the falls themselves, then a real but gentler descent down
@@ -858,22 +873,54 @@ export class Terrain {
           floorH = L2_TOP_H - (L2_TOP_H - L2_POOL_H) * eased;
         } else {
           const rt = (t - L2_T_FALL1) / (1 - L2_T_FALL1);
-          const eased2 = 1 - Math.pow(1 - rt, 1.6);
-          floorH = L2_POOL_H - (L2_POOL_H - L2_LAKE_H) * eased2;
-        }
+          // The working valley floor descends in 3 real steps (4 flat
+          // terraces) rather than one smooth grade - each step is a small
+          // waterfall right on the river's own centreline (same quintic-ease
+          // technique as the main falls, just much smaller), giving the user's
+          // "3 or so small elevation changes with small waterfalls" - while a
+          // parallel continuous ramp (the OLD single eased2 curve) still runs
+          // the same total drop over the whole length, so there's always a
+          // driveable grade beside the steps for the vehicles. Blended between
+          // the two by distance from the river's centreline.
+          const STEPS = 3;
+          const stepDrop = (L2_POOL_H - L2_LAKE_H) / (STEPS + 1);
+          const bandF = THREE.MathUtils.clamp(rt, 0, 0.99999) * (STEPS + 1);
+          const band = Math.floor(bandF);
+          const within = bandF - band;
+          const stepStart = 0.93; // each terrace is flat for its first 93%, then drops - narrow enough to read as a real small step, not just a gentle grade
+          let dropFrac = 0;
+          if (within > stepStart) {
+            const dt2 = (within - stepStart) / (1 - stepStart);
+            dropFrac = dt2 * dt2 * (3 - 2 * dt2);
+          }
+          const terraceH = (L2_POOL_H - band * stepDrop) - stepDrop * dropFrac;
 
-        const cx = streamCenterXLevel2(z);
-        const ci = cx / CELL;
-        const distCells = Math.abs(i - ci);
+          const eased2 = 1 - Math.pow(1 - rt, 1.6);
+          const rampH = L2_POOL_H - (L2_POOL_H - L2_LAKE_H) * eased2;
+
+          const channelHalf = 3.0 + 2.0 * rt;
+          const rampBlend = THREE.MathUtils.clamp((distCells - channelHalf) / 6.0, 0, 1);
+          floorH = THREE.MathUtils.lerp(terraceH, rampH, rampBlend);
+        }
 
         // Gorge floor around the falls, widening into a real (if still
         // steep-sided) valley floor downstream. Widened from the original
         // 5+3/9+10 - the camera clipped against the walls on anything but a
         // dead-on view, and there wasn't enough flat ground up top to dig an
         // alternate waterfall notch into.
-        const halfWidth = t <= L2_T_FALL1
-          ? 7 + 4 * Math.min(1, t / L2_T_FALL1)
-          : 11 + 11 * Math.min(1, (t - L2_T_FALL1) / (1 - L2_T_FALL1));
+        const chuteHalfWidth = 7 + 4 * Math.min(1, t / L2_T_FALL1);
+        // Above the falls, the chute belled out into a small lake basin - see
+        // L2_LAKE_* above. Bulges widest mid-plateau, tapering back down to
+        // match the chute's own width right at the outlet (t=L2_T_FALL0) for
+        // a seamless handoff, and again toward the inland map edge (t=0).
+        const lakeBulge = t <= L2_T_FALL0
+          ? Math.sin(THREE.MathUtils.clamp(t / L2_T_FALL0, 0, 1) * Math.PI)
+          : 0;
+        const halfWidth = t <= L2_T_FALL0
+          ? chuteHalfWidth + lakeBulge * 16
+          : t <= L2_T_FALL1
+            ? chuteHalfWidth
+            : 11 + 11 * Math.min(1, (t - L2_T_FALL1) / (1 - L2_T_FALL1));
         const distToWallEdge = Math.max(0, distCells - halfWidth);
         // Walls taper down somewhat toward the valley's low exit end, so it
         // reads as opening up rather than staying a uniform-height trench for
@@ -909,6 +956,18 @@ export class Terrain {
         // a knife-edge into the ordinary valley floor slope.
         const poolDist = Math.sqrt((x - L2_LIP_X) ** 2 + (z - L2_T_FALL1 * SIZE) ** 2);
         if (poolDist < 7) h -= (1 - poolDist / 7) * 2.2;
+
+        // The lake basin itself - an elliptical bowl carved into the plateau,
+        // well clear of the actual drop (see L2_LAKE_* above), so there's a
+        // real depth for water.js's source cells to fill rather than a flat
+        // plain the water just spreads thin across. Its rim (right at the
+        // ellipse edge) sits back at the plain plateau height, held in by the
+        // ordinary wallRise beyond halfWidth - dig THAT rim down anywhere
+        // along the lake's edge and the sim should send water there too.
+        const lakeEllipse = Math.sqrt(
+          ((x - L2_LIP_X) / L2_LAKE_RADIUS_X) ** 2 + ((z - L2_LAKE_CENTER_Z) / L2_LAKE_RADIUS_Z) ** 2
+        );
+        if (lakeEllipse < 1) h -= (1 - lakeEllipse) * L2_LAKE_DEPTH;
 
         this.bedrock[idx(i, j)] = h;
 

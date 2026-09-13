@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SIZE, CELL, streamCenterX, coastT, warpX } from './terrain.js?v=88';
+import { SIZE, CELL, streamCenterX, coastT, warpX } from './terrain.js?v=91';
 
 // Small floating leaves/twigs that ride the stream's ACTUAL simulated current
 // (water.flowAt's real per-cell velX/velZ, not a scripted path) from source to

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=88';
+  L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
+} from './terrain.js?v=91';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -88,6 +89,7 @@ export class WaterSim {
 
     this._seedSource();
     this._seedChannel(terrain);
+    this._seedLake(terrain);
     this._buildMesh();
 
     this._accum = 0;
@@ -97,14 +99,13 @@ export class WaterSim {
 
   _seedSource() {
     if (getActiveLevel() === 'level2') {
-      // A single concentrated source right at the waterfall's lip - a real
-      // falls has one point of origin at height, not a spread spring line
-      // like level 1's gentle inland stream. The flux sim itself (unchanged
-      // below) then has to carry this down the near-vertical drop to the pool
-      // - see _seedChannel's own comment for why the diggable seep channel
-      // only starts BELOW that pool.
+      // Feeds the lake basin above the falls (see terrain.js's L2_LAKE_*),
+      // not the falls' lip directly any more - the lake fills from its own
+      // deepest point and spills wherever its rim is lowest, same as any
+      // real lake, so a player-dug notch elsewhere in the rim can carry
+      // water too without a separate scripted path for it.
       this.sourceCells = [];
-      const j0 = Math.round((L2_T_FALL0 * SIZE) / CELL);
+      const j0 = Math.round(L2_LAKE_CENTER_Z / CELL);
       const ci = Math.round(L2_LIP_X / CELL);
       for (let di = -1; di <= 1; di++) {
         const i = ci + di;
@@ -159,6 +160,36 @@ export class WaterSim {
       this._seepProfile.push(row);
     }
     this._seepRows = this._seepProfile.length;
+  }
+
+  // The upper lake (terrain.js's L2_LAKE_* basin) needs to read as a real,
+  // already-full lake from frame one - the single point source alone
+  // (see _seedSource) would take a very long time to fill a basin this size
+  // from empty, same reasoning as _seedChannel pre-seeding the river. A
+  // one-time direct fill (not a per-step top-up like the channel's seepage -
+  // that mechanism is ordered source-to-sea for a dam-detection pass along a
+  // single channel, which doesn't map onto a wide 2D basin) rather than
+  // waiting on the sim.
+  _seedLake(terrain) {
+    if (getActiveLevel() !== 'level2') return;
+    const j0 = Math.max(0, Math.floor((L2_LAKE_CENTER_Z - L2_LAKE_RADIUS_Z) / CELL));
+    const j1 = Math.min(N - 1, Math.ceil((L2_LAKE_CENTER_Z + L2_LAKE_RADIUS_Z) / CELL));
+    const i0 = Math.max(0, Math.floor((L2_LIP_X - L2_LAKE_RADIUS_X) / CELL));
+    const i1 = Math.min(N - 1, Math.ceil((L2_LIP_X + L2_LAKE_RADIUS_X) / CELL));
+    for (let j = j0; j <= j1; j++) {
+      const z = j * CELL;
+      for (let i = i0; i <= i1; i++) {
+        const x = i * CELL;
+        const ellip = Math.sqrt(
+          ((x - L2_LIP_X) / L2_LAKE_RADIUS_X) ** 2 + ((z - L2_LAKE_CENTER_Z) / L2_LAKE_RADIUS_Z) ** 2
+        );
+        if (ellip >= 1) continue;
+        const k = idx(i, j);
+        if (terrain.blocked[k]) continue;
+        const target = (1 - ellip) * 1.6;
+        this.depth[k] = Math.max(this.depth[k], target);
+      }
+    }
   }
 
   _buildMesh() {
