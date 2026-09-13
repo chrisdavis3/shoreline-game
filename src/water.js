@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=76';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=77';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -276,9 +276,27 @@ export class WaterSim {
         uniform vec3 uFoam;
         uniform vec3 uSunDir;
 
-        // Cheap hash noise for foam texture - no extra texture upload, just enough
-        // to break up a flat colour band into something bubbly/mottled.
-        float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+        // Cheap hash noise for foam/flow-streak texture - no extra texture upload,
+        // just enough to break up a flat colour band into something bubbly/mottled.
+        //
+        // The classic fract(sin(dot(p,...))*43758.5) hash is a well-known trap on
+        // mobile GPUs: fragment shaders there commonly run at mediump (~10 bits of
+        // mantissa) regardless of what precision the shader requests, and sin()
+        // loses essentially all useful precision once its argument gets into the
+        // hundreds/thousands - which dot(p, vec2(127.1,311.7)) reaches almost
+        // immediately at these world-space coordinate scales. The result isn't
+        // random at all any more, it's a coarse, highly-periodic repeating pattern
+        // - rendered directly as regular parallel stripes across the whole water
+        // surface (confirmed live on an actual iPhone: an obvious, perfectly even
+        // "football pitch" hatching, completely absent on desktop). This
+        // reformulation (fract/dot/multiply only, no sin, no large magic constant)
+        // is the standard mobile-safe replacement - same visual job, no precision
+        // cliff at any GPU's mediump range.
+        float hash21(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
+        }
         float valueNoise(vec2 p) {
           vec2 i = floor(p), f = fract(p);
           float a = hash21(i), b = hash21(i + vec2(1.0, 0.0));

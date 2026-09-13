@@ -1,13 +1,13 @@
 import * as THREE from 'three';
-import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=76';
-import { WaterSim } from './water.js?v=76';
-import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=76';
-import { scatterRocks, Rock } from './rocks.js?v=76';
-import { Player } from './player.js?v=76';
-import { AudioSystem } from './audio.js?v=76';
-import { Particles } from './particles.js?v=76';
-import { Debris } from './debris.js?v=76';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=76';
+import { Terrain, SIZE, GRID, CELL, streamCenterX, idx } from './terrain.js?v=77';
+import { WaterSim } from './water.js?v=77';
+import { buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage } from './environment.js?v=77';
+import { scatterRocks, Rock } from './rocks.js?v=77';
+import { Player } from './player.js?v=77';
+import { AudioSystem } from './audio.js?v=77';
+import { Particles } from './particles.js?v=77';
+import { Debris } from './debris.js?v=77';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=77';
 
 // Bumped alongside every ?v=N cache-bust across the project (see version.txt,
 // fetched below) - mobile Safari in particular can keep an old tab's JS
@@ -17,7 +17,7 @@ import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 76;
+const APP_VERSION = 77;
 
 // ---------- renderer / scene / camera ----------
 

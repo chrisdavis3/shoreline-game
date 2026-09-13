@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx } from './terrain.js?v=76';
-import { Noise2D } from './noise.js?v=76';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx } from './terrain.js?v=77';
+import { Noise2D } from './noise.js?v=77';
 
 const decoNoise = new Noise2D(555);
 
@@ -26,7 +26,16 @@ export function buildSky(scene) {
       uniform vec3 uTop, uHorizon, uBottom;
       uniform float uTime;
 
-      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+      // Precision-safe hash (no sin, no large magic constant) - see water.js's
+      // hash21 for why: a sin()-based hash reads as regular banding, not noise,
+      // once a fragment shader drops to mediump (routine on mobile GPUs regardless
+      // of requested precision), and sin() loses essentially all useful precision
+      // at the argument magnitudes this reaches.
+      float hash(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
       float noise(vec2 p) {
         vec2 i = floor(p), f = fract(p);
         float a = hash(i), b = hash(i + vec2(1.0, 0.0));
