@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, warpX } from './terrain.js?v=102';
-import { Noise2D } from './noise.js?v=102';
+import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=103';
+import { Noise2D } from './noise.js?v=103';
 
 const rn = new Noise2D(777);
 
@@ -107,7 +107,15 @@ export function scatterRocks(terrain, scene, count = 46) {
   while (placed < count && attempts < count * 20) {
     attempts++;
     const x = Math.random() * SIZE;
-    const z = Math.random() * SIZE * 0.72 + SIZE * 0.03;
+    // This z-range (a band starting just past the dunes) was tuned for level
+    // 1's own beach/dune geography - unconditionally reused for level 2 too,
+    // it dropped pickup rocks onto the plateau, into the lake, and on the
+    // falls' own sheer face ("rocks at the top of the waterfall"). Confine
+    // to the working valley below the pool there instead - the plateau/lake/
+    // falls read as open, uncluttered highland by design (see terrain.js).
+    const z = getActiveLevel() === 'level2'
+      ? Math.random() * (SIZE - L2_T_FALL1 * SIZE - SIZE * 0.02) + L2_T_FALL1 * SIZE + SIZE * 0.02
+      : Math.random() * SIZE * 0.72 + SIZE * 0.03;
     const t = z / SIZE;
     const cx = streamCenterX(z);
     const distToStream = Math.abs(x - cx);
