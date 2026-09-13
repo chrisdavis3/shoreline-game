@@ -1,10 +1,22 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=91';
+import { Noise2D } from './noise.js?v=93';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
 // z=0 is inland (dunes / high ground), z=SIZE is the open sea.
 
+// Bumped whenever a level's actual SHAPE-generating logic changes (a new
+// L2_* constant, a new basin/carve, a different halfWidth formula, etc.) -
+// as opposed to SCHEMA_VERSION in save.js, which only tracks the save
+// file's own field layout. save.js compares this against what a save was
+// written with and discards the save if they differ, rather than blindly
+// overwriting freshly-generated (new-shape) terrain with an old raw height
+// snapshot - the actual cause of "the lake's gone and there's a duplicate
+// floating waterfall" after this session's terrain rework: the OLD save's
+// height array (old falls position, no lake) was overwriting the new
+// generation, while everything else (the cascade mesh, water source) used
+// the new constants.
+export const TERRAIN_VERSION = 2;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)
@@ -87,6 +99,41 @@ export const L2_LAKE_CENTER_Z = L2_T_FALL0 * SIZE * 0.42;
 export const L2_LAKE_RADIUS_Z = L2_T_FALL0 * SIZE * 0.36;
 export const L2_LAKE_RADIUS_X = 15;
 export const L2_LAKE_DEPTH = 4;
+
+// A walkable/driveable switchback ramp cut into one side of the gorge wall -
+// the falls themselves are deliberately unclimbable (near-vertical), so
+// without this there was simply no way up to the plateau/lake at all (the
+// original bug report: "no access to top of waterfall"). A single straight
+// diagonal ramp using the map's own available width comes out around 40+
+// degrees - well past VehicleBase's climbStall (~0.6 rise/run, ~31 degrees,
+// see vehicles.js) - so this zigzags across 3 legs instead, roughly tripling
+// the usable run for the same ~45m rise (L2_TOP_H - L2_POOL_H) down to
+// around 20 degrees, comfortably climbable.
+export const L2_PATH_PTS = [
+  { x: L2_LIP_X + 14, z: L2_T_FALL1 * SIZE, h: L2_POOL_H },
+  { x: L2_LIP_X + 42, z: L2_T_FALL1 * SIZE - (L2_T_FALL1 - L2_T_FALL0) * SIZE / 3, h: L2_POOL_H + (L2_TOP_H - L2_POOL_H) / 3 },
+  { x: L2_LIP_X + 14, z: L2_T_FALL1 * SIZE - (L2_T_FALL1 - L2_T_FALL0) * SIZE * 2 / 3, h: L2_POOL_H + (L2_TOP_H - L2_POOL_H) * 2 / 3 },
+  { x: L2_LIP_X + 42, z: L2_T_FALL0 * SIZE - 2, h: L2_TOP_H },
+];
+export const L2_PATH_WIDTH = 7;
+
+// Nearest point on the access path's polyline to (x, z) - dist for how far
+// off the ramp's own centreline, h for the ramp's intended height there
+// (smoothly continuous across the zigzag's bends since each leg's own u=0/1
+// endpoints share exactly the shared waypoint's height).
+export function accessPathSample(x, z) {
+  let best = null;
+  for (let s = 0; s < L2_PATH_PTS.length - 1; s++) {
+    const a = L2_PATH_PTS[s], b = L2_PATH_PTS[s + 1];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const lenSq = dx * dx + dz * dz;
+    const u = lenSq > 0 ? THREE.MathUtils.clamp(((x - a.x) * dx + (z - a.z) * dz) / lenSq, 0, 1) : 0;
+    const px = a.x + u * dx, pz = a.z + u * dz;
+    const dist = Math.hypot(x - px, z - pz);
+    if (!best || dist < best.dist) best = { dist, h: THREE.MathUtils.lerp(a.h, b.h, u) };
+  }
+  return best;
+}
 
 function streamCenterXLevel2(z) {
   const t = z / SIZE;
@@ -926,7 +973,21 @@ export class Terrain {
         // reads as opening up rather than staying a uniform-height trench for
         // its whole length.
         const wallGain = L2_WALL_HEIGHT * (1 - 0.55 * Math.min(1, t * 1.15));
-        const wallRise = Math.pow(Math.min(1, distToWallEdge / 22), 0.6) * wallGain;
+        let wallRise = Math.pow(Math.min(1, distToWallEdge / 22), 0.6) * wallGain;
+
+        // The access ramp (see L2_PATH_* above) needs a wide, gently-graded
+        // notch through the wall to actually climb through, not just a narrow
+        // strip at its own exact height dropped into an otherwise full-height
+        // cliff - a first attempt at exactly that got eaten by _erode's own
+        // sand-slumping (confirmed live: the huge one-cell height jump at the
+        // strip's edge violates its max stable slope, so 40s of priming
+        // simulation alone slumped the neighbouring wall straight over it).
+        // Suppressing wallRise over a much wider corridor around the path
+        // means the ramp's own later, narrow height override (below) is never
+        // sitting right next to a near-vertical drop in the first place.
+        const pathCorridor = accessPathSample(x, z);
+        const corridorOpen = 1 - THREE.MathUtils.smoothstep(pathCorridor.dist, 0, 26);
+        wallRise *= 1 - corridorOpen * 0.94;
 
         let h = floorH + wallRise;
 
@@ -969,6 +1030,21 @@ export class Terrain {
         );
         if (lakeEllipse < 1) h -= (1 - lakeEllipse) * L2_LAKE_DEPTH;
 
+        // The access ramp (see L2_PATH_* above) cuts through whatever the
+        // wall/falls would otherwise be at this point - it has to override
+        // rather than blend additively, since the whole point is carving a
+        // climbable route through terrain that's normally a sheer, unclimbable
+        // wall. Applied last, right before committing bedrock, so it wins
+        // over the fall/lake/wall shaping above it. (Reuses the same sample
+        // already taken above for the wallRise corridor suppression.)
+        const pathHere = pathCorridor;
+        let pathBlend = 0;
+        if (pathHere.dist < L2_PATH_WIDTH) {
+          const raw = 1 - pathHere.dist / L2_PATH_WIDTH;
+          pathBlend = raw * raw * (3 - 2 * raw);
+          h = THREE.MathUtils.lerp(h, pathHere.h, pathBlend);
+        }
+
         this.bedrock[idx(i, j)] = h;
 
         // Hardness: the falls' own face and the valley walls are bare rock;
@@ -984,6 +1060,11 @@ export class Terrain {
         if (nearFallsFace && distCells < 3) hard = Math.max(hard, 0.88);
         const outcrop = n2.fbm(i * 0.08, j * 0.08, 3);
         if (outcrop > 0.45) hard = Math.max(hard, (outcrop - 0.45) * 2.8);
+        // A packed dirt trail, not bare rock - overrides the wall hardness
+        // above the same way pathBlend overrode its height, so it actually
+        // reads (and digs) as a track rather than the sheer rock it cuts
+        // through.
+        if (pathBlend > 0) hard = THREE.MathUtils.lerp(hard, 0.2, pathBlend);
         this.hardness[idx(i, j)] = Math.min(1, hard);
       }
     }
@@ -998,6 +1079,7 @@ export class Terrain {
       const riverWidth = 9;
       for (let i = 1; i < GRID - 1; i++) {
         if (Math.abs(i - riverI) < riverWidth) continue;
+        if (accessPathSample(i * CELL, z).dist < L2_PATH_WIDTH) continue; // the ramp's own real slope shouldn't re-harden it back into rock
         const k = idx(i, j);
         const hL = this.bedrock[idx(i - 1, j)], hR = this.bedrock[idx(i + 1, j)];
         const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];

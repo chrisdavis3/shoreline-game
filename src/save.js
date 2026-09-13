@@ -4,6 +4,7 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
+import { TERRAIN_VERSION } from './terrain.js?v=93';
 
 // Each level gets its own independent save slot, keyed by level id, so
 // progress in one never overwrites or gets clobbered by the other. Level 1's
@@ -38,6 +39,7 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
   try {
     const data = {
       v: SCHEMA_VERSION,
+      terrainV: TERRAIN_VERSION,
       savedAt: Date.now(),
       height: f32ToBase64(terrain.height),
       hardness: f32ToBase64(terrain.hardness),
@@ -75,6 +77,14 @@ export function loadSavedData(levelId = 'level1') {
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data.v !== SCHEMA_VERSION) return null; // don't try to apply an incompatible shape
+    // A save written against an older terrain generation would otherwise
+    // silently overwrite freshly (newly) generated terrain with an old raw
+    // height snapshot - wrong falls position, no lake, etc. - while
+    // everything else keeps using the new constants. Terrain-shape changes
+    // discard old saves for that level rather than risk that mismatch;
+    // saves missing terrainV entirely predate this check and are treated
+    // the same as a mismatch (discarded), not assumed compatible.
+    if (data.terrainV !== TERRAIN_VERSION) return null;
     return data;
   } catch (e) {
     console.warn('[shoreline] saved data unreadable, ignoring it:', e);
