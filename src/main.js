@@ -2,19 +2,19 @@ import * as THREE from 'three';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=87';
-import { WaterSim } from './water.js?v=87';
+} from './terrain.js?v=88';
+import { WaterSim } from './water.js?v=88';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=87';
-import { scatterRocks, Rock } from './rocks.js?v=87';
-import { Player } from './player.js?v=87';
-import { AudioSystem } from './audio.js?v=87';
-import { Particles } from './particles.js?v=87';
-import { Debris } from './debris.js?v=87';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=87';
-import { Bulldozer, Excavator } from './vehicles.js?v=87';
+} from './environment.js?v=88';
+import { scatterRocks, Rock } from './rocks.js?v=88';
+import { Player } from './player.js?v=88';
+import { AudioSystem } from './audio.js?v=88';
+import { Particles } from './particles.js?v=88';
+import { Debris } from './debris.js?v=88';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=88';
+import { Bulldozer, Excavator } from './vehicles.js?v=88';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,7 +34,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 87;
+const APP_VERSION = 88;
 
 // ---------- renderer / scene / camera ----------
 
@@ -1145,13 +1145,16 @@ function updateVehicleUI() {
 // ---------- village door (the sole route into level 2) ----------
 
 // The gorge door only appears in level 1, on the one hero house buildVillage()
-// singled out (see environment.js) - and even there, not until the player's
-// been playing a little while, so it's a thing to stumble on rather than an
-// upfront choice (that's the whole point of replacing the old boot-time level
-// picker with this). Re-uses the picker's own markup/styling (#levelSelect),
-// repointed at a single "enter the gorge" card instead of the two-level
-// chooser it used to be - see index.html/artifact.html.
-const DOOR_UNLOCK_SECONDS = 90;
+// singled out (see environment.js) - it's meant to be a thing to stumble on
+// rather than an upfront choice (that's the whole point of replacing the old
+// boot-time level picker with this), but that comes from the door itself
+// being unremarkable amid 25 ordinary houses, not from an artificial delay -
+// an earlier version also gated the popup behind 90s of elapsed play time
+// with no feedback at all, so finding the door before then just looked
+// broken ("I see the door but nothing happens"). Re-uses the picker's own
+// markup/styling (#levelSelect), repointed at a single "enter the gorge"
+// card instead of the two-level chooser it used to be - see index.html/
+// artifact.html.
 const DOOR_RANGE = 2.6;
 const doorPopupEl = document.getElementById('levelSelect');
 let doorPopupShown = false;
@@ -1163,10 +1166,9 @@ function nearVillageDoor() {
   return Math.hypot(dx, dz) < DOOR_RANGE;
 }
 
-function updateDoorUI(elapsedTime) {
+function updateDoorUI() {
   if (!villageDoor || ACTIVE_LEVEL_ID !== 'level1' || drivingVehicle) return;
-  const unlocked = elapsedTime > DOOR_UNLOCK_SECONDS;
-  const near = unlocked && nearVillageDoor();
+  const near = nearVillageDoor();
   if (near && !doorPopupShown && !doorDismissed) {
     doorPopupShown = true;
     if (doorPopupEl) doorPopupEl.style.display = 'flex';
@@ -1349,7 +1351,7 @@ function stepFrame(dt, elapsedTime) {
   birds.update(elapsedTime);
   updateTideUI();
   updateVehicleUI();
-  updateDoorUI(elapsedTime);
+  updateDoorUI();
   hints.update(dt);
 
   const audioSubject = drivingVehicle || player;
