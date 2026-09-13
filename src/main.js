@@ -2,19 +2,19 @@ import * as THREE from 'three';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=82';
-import { WaterSim } from './water.js?v=82';
+} from './terrain.js?v=85';
+import { WaterSim } from './water.js?v=85';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=82';
-import { scatterRocks, Rock } from './rocks.js?v=82';
-import { Player } from './player.js?v=82';
-import { AudioSystem } from './audio.js?v=82';
-import { Particles } from './particles.js?v=82';
-import { Debris } from './debris.js?v=82';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=82';
-import { Bulldozer, Excavator } from './vehicles.js?v=82';
+} from './environment.js?v=85';
+import { scatterRocks, Rock } from './rocks.js?v=85';
+import { Player } from './player.js?v=85';
+import { AudioSystem } from './audio.js?v=85';
+import { Particles } from './particles.js?v=85';
+import { Debris } from './debris.js?v=85';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=85';
+import { Bulldozer, Excavator } from './vehicles.js?v=85';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,7 +34,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 82;
+const APP_VERSION = 85;
 
 // ---------- renderer / scene / camera ----------
 
@@ -251,49 +251,53 @@ function createVehicle(type, x, z, heading, terrainRef) {
 // Finds a flat, unblocked, stream-clear spot for each vehicle - the same kind
 // of candidate-search buildVillage()/scatterRocks() already use, rather than
 // a bare hardcoded coordinate, so a future terrain tweak here can't strand a
-// vehicle half-buried or floating. Confined to a clearing east of the village
-// (between the houses and the stream) so it reads as a small "construction
-// yard" rather than being scattered across the whole beach.
+// vehicle half-buried or floating. The candidate box itself is level-gated:
+// construction equipment only belongs in the gorge's own working valley
+// floor, not the coastal village - level 1 never calls this any more (see
+// the `vehicles` const below).
 function placeVehicles(terrainRef) {
   const specs = [
     { type: 'bulldozer', heading: Math.PI * 0.12 },
     { type: 'excavator', heading: -Math.PI * 0.22 },
   ];
+  // Level 2's working stretch runs from the landing pool (t~0.20) down to the
+  // lake (t~0.90) - centred well inside that, clear of both the waterfall
+  // spray and the lake shore, spanning most of the valley's own width so the
+  // search has real room to find flat ground beside the river. The valley
+  // floor itself is a steady slope (not flat like level 1's village), so
+  // rather than reject candidates against a fixed flatness threshold - which
+  // can end up with nothing qualifying at all - score every candidate and
+  // keep the flattest one seen.
+  const zLo = SIZE * 0.30, zHi = SIZE * 0.55;
+  const xLo = SIZE * 0.20, xHi = SIZE * 0.80;
   const chosen = [];
   for (const spec of specs) {
-    let x = SIZE * 0.72, z = SIZE * 0.15; // fallback - only used if every attempt below fails
-    for (let attempt = 0; attempt < 80; attempt++) {
-      const cx = SIZE * 0.66 + Math.random() * SIZE * 0.12;
-      const cz = SIZE * 0.10 + Math.random() * SIZE * 0.11;
-      if (Math.abs(cx - streamCenterX(cz)) < 14) continue; // stay well clear of the stream corridor
+    let best = null;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const cx = xLo + Math.random() * (xHi - xLo);
+      const cz = zLo + Math.random() * (zHi - zLo);
+      if (Math.abs(cx - streamCenterX(cz)) < 14) continue; // stay well clear of the stream/river corridor
       if (terrainRef.blocked[idx(Math.round(cx / CELL), Math.round(cz / CELL))]) continue;
+      let tooClose = false;
+      for (const p of chosen) { if (Math.hypot(p.x - cx, p.z - cz) < 6) { tooClose = true; break; } }
+      if (tooClose) continue;
       const hC = terrainRef.sampleHeightBilinear(cx, cz);
       const hL = terrainRef.sampleHeightBilinear(cx - 1.6, cz);
       const hR = terrainRef.sampleHeightBilinear(cx + 1.6, cz);
       const hF = terrainRef.sampleHeightBilinear(cx, cz - 1.6);
       const hB = terrainRef.sampleHeightBilinear(cx, cz + 1.6);
       const spread = Math.max(hC, hL, hR, hF, hB) - Math.min(hC, hL, hR, hF, hB);
-      if (spread > 0.7) continue;
-      let tooClose = false;
-      for (const p of chosen) { if (Math.hypot(p.x - cx, p.z - cz) < 6) { tooClose = true; break; } }
-      if (tooClose) continue;
-      x = cx; z = cz;
-      break;
+      if (!best || spread < best.spread) best = { x: cx, z: cz, spread };
+      if (best.spread < 0.5) break; // good enough, stop searching
     }
-    chosen.push({ x, z });
+    chosen.push(best || { x: SIZE * 0.5, z: SIZE * 0.4 });
   }
   return specs.map((spec, i) => createVehicle(spec.type, chosen[i].x, chosen[i].z, spec.heading, terrainRef));
 }
 
-// placeVehicles()'s candidate coordinates are tuned for level 1's village
-// clearing (see its own comment) - the concurrent Level 2 terrain didn't
-// exist yet when that placement logic was written, so it has no idea a
-// waterfall/gorge occupies that same coordinate range there. Rather than let
-// a bulldozer spawn wedged into a cliff face, vehicles stay level-1-only
-// until they're deliberately placed somewhere sane in level 2 (matches the
-// coordination note both agents were given: "they'll place vehicles in Level
-// 2 once your terrain exists" - that placement work just hasn't landed yet).
-const vehicles = ACTIVE_LEVEL_ID !== 'level1' ? [] : (
+// Construction equipment only belongs in the gorge (level 2) - a hand-shovel
+// coastal sandbox has no business with a bulldozer parked on the beach.
+const vehicles = ACTIVE_LEVEL_ID !== 'level2' ? [] : (
   savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
     ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
     : placeVehicles(terrain)
@@ -324,9 +328,10 @@ canvas.addEventListener('pointerdown', (e) => {
   ensureAudioStarted();
   if (e.button === 0) mouse.left = true;
   if (e.button === 2) mouse.right = true;
-  // Excavator dig is a single triggered animation, not a held drain - fire it
-  // once on the click, not continuously while mouse.left stays true.
-  if (e.button === 0 && drivingVehicle && drivingVehicle.type === 'excavator') drivingVehicle.requestDig();
+  // Excavator digging is driven centrally by computeVehicleControls()'s
+  // digHeld/digPressed each frame (holding now repeats the whole dig cycle -
+  // requestDig() itself no-ops while one is already running) - no separate
+  // trigger needed here any more.
 });
 window.addEventListener('pointerup', (e) => {
   if (e.button === 0) mouse.left = false;
@@ -437,13 +442,11 @@ function bindHoldButton(id, onDown, onUp) {
 const digBtnEl = document.getElementById('digBtn');
 const smoothBtnEl = document.getElementById('smoothBtn');
 bindHoldButton('digBtn',
-  // While driving the excavator, this same button triggers one full dig
-  // cycle instead of the hand shovel's hold-to-scoop - a single tap, not a
-  // hold, since the dig is a whole scripted animation, not a drained ramp.
-  () => {
-    if (drivingVehicle && drivingVehicle.type === 'excavator') { drivingVehicle.requestDig(); return; }
-    touchDigHeld = true; digBtnEl.classList.add('active');
-  },
+  // touchDigHeld drives all three: the hand shovel's hold-to-scoop, the
+  // excavator's hold-to-repeat dig cycle, and the bulldozer's blade toggle
+  // (via computeVehicleControls()'s digHeld/digPressed) - one physical
+  // button, interpreted per context rather than special-cased here.
+  () => { touchDigHeld = true; digBtnEl.classList.add('active'); },
   () => { touchDigHeld = false; digBtnEl.classList.remove('active'); });
 bindHoldButton('smoothBtn',
   () => { touchSmoothHeld = true; smoothBtnEl.classList.add('active'); },
@@ -858,6 +861,17 @@ function exitVehicle() {
 // movement, so getting in doesn't mean learning a new control scheme. Z/X
 // additionally rotate the excavator's cab independent of its tracks - the
 // "extra input while driving" the brief calls for to aim the dig.
+// Same physical dig input the hand shovel already uses (mouse left / the
+// touch Dig button) - reused here rather than a separate vehicle-only
+// control, so getting in a vehicle doesn't mean learning a new button.
+// `digHeld` is the continuous state (excavator repeats its whole dig cycle
+// for as long as this stays true - "holding the dig button should enable
+// continuous digging", requestDig() itself is a no-op while a cycle is
+// already running, so calling it every frame just chains cycles back to
+// back); `digPressed` is the rising edge only, once per press (the
+// bulldozer's blade is a toggle - "a dig button which moves the shovel down
+// ... which stays on" - not something that should flip every frame it's held).
+let _wasDigHeld = false;
 function computeVehicleControls() {
   let throttle = 0, steer = 0, cabTurn = 0;
   if (keys.has('KeyW') || keys.has('ArrowUp')) throttle += 1;
@@ -868,10 +882,14 @@ function computeVehicleControls() {
   steer += touch.x;
   if (keys.has('KeyX')) cabTurn += 1;
   if (keys.has('KeyZ')) cabTurn -= 1;
+  const digHeld = mouse.left || touchDigHeld;
+  const digPressed = digHeld && !_wasDigHeld;
+  _wasDigHeld = digHeld;
   return {
     throttle: THREE.MathUtils.clamp(throttle, -1, 1),
     steer: THREE.MathUtils.clamp(steer, -1, 1),
     cabTurn: THREE.MathUtils.clamp(cabTurn, -1, 1),
+    digHeld, digPressed,
   };
 }
 
@@ -1097,14 +1115,16 @@ function updateVehicleUI() {
     vehiclePromptEl.style.display = 'none';
     vehicleHudEl.style.display = 'block';
     vehicleHudEl.textContent = drivingVehicle.type === 'excavator'
-      ? 'W/S drive · A/D turn · Z/X rotate cab · click to dig · E to exit'
-      : 'W/S drive · A/D turn · drive into a mound to grade it · E to exit';
+      ? 'W/S drive · A/D turn · Z/X rotate cab · hold to dig · E to exit'
+      : `W/S drive · A/D turn · Dig lowers the blade (${drivingVehicle.bladeDown ? 'down' : 'up'}) · E to exit`;
     interactBtn.textContent = 'Exit';
-    digBtnEl.style.display = drivingVehicle.type === 'excavator' ? '' : 'none';
+    digBtnEl.style.display = '';
+    digBtnEl.textContent = drivingVehicle.type === 'bulldozer' && drivingVehicle.bladeDown ? 'Blade down' : 'Dig';
     smoothBtnEl.style.display = 'none';
   } else {
     vehicleHudEl.style.display = 'none';
     digBtnEl.style.display = '';
+    digBtnEl.textContent = 'Dig';
     smoothBtnEl.style.display = '';
     const nearVeh = findNearbyVehicle();
     if (nearVeh) {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SIZE, warpX } from './terrain.js?v=82';
+import { SIZE, warpX } from './terrain.js?v=85';
 
 // Drivable construction vehicles: a bulldozer (blade grading) and an excavator
 // (fixed-reach bucket digging, independently-rotating cab). Deliberately
@@ -117,7 +117,7 @@ function buildBulldozerMesh(mats) {
 
   addShadows(group);
   return {
-    group,
+    group, blade,
     halfLength: HALF_LEN, halfWidth: HALF_WID, deckY: DECK_Y,
     bladeOffset: HALF_LEN + 1.05, bladeLen: 0.6, bladeWidth: HALF_WID * 1.7,
   };
@@ -292,8 +292,11 @@ class VehicleBase {
 
     // Tank pivot turn - full authority at any speed (real tracked steering),
     // gently damped at high forward speed so it doesn't spin like a top.
+    // Sign flipped - reported directly as reversed (pressing D turned the
+    // vehicle left on screen, and vice versa) for both the bulldozer and
+    // excavator, which share this same driving code.
     const speedDamp = 1 - 0.3 * Math.min(1, Math.abs(this.speed) / this.maxForwardSpeed);
-    this.facing += input.steer * this.maxTurnRate * speedDamp * dt;
+    this.facing -= input.steer * this.maxTurnRate * speedDamp * dt;
 
     const fwd = this.worldForward();
     this.pos.x += fwd.x * this.speed * dt;
@@ -358,7 +361,13 @@ export class Bulldozer {
     this.bladeOffset = built.bladeOffset;
     this.bladeLen = built.bladeLen;
     this.bladeWidth = built.bladeWidth;
+    this.bladeMesh = built.blade;
+    this._bladeRestY = built.blade.position.y;
     this._gradeAccum = 0;
+    // Blade starts UP/inactive - grading is now an explicit toggle ("a dig
+    // button which moves the shovel down to move the earth, that stays on"),
+    // not automatic just from driving forward.
+    this.bladeDown = false;
   }
 
   get pos() { return this.base.pos; }
@@ -369,7 +378,15 @@ export class Bulldozer {
   // Returns { gradeEvent } for main.js to hang particles/audio off.
   update(dt, input, terrain, water) {
     this.base._updateMovement(dt, input, terrain, water);
-    const gradeEvent = this._grade(dt, terrain);
+    // Toggle, not hold - one press drops the blade and it stays down until
+    // pressed again, same as a real blade-control lever.
+    if (input.digPressed) this.bladeDown = !this.bladeDown;
+    // Ease the visible blade mesh toward its up/down pose rather than
+    // snapping, so the toggle reads as a real mechanical action.
+    const targetY = this._bladeRestY - (this.bladeDown ? 0.22 : 0);
+    this.bladeMesh.position.y += (targetY - this.bladeMesh.position.y) * Math.min(1, dt * 6);
+    const gradeEvent = this.bladeDown ? this._grade(dt, terrain) : null;
+    if (!this.bladeDown) this._gradeAccum = 0;
     return { gradeEvent };
   }
 
@@ -508,6 +525,12 @@ export class Excavator {
       this.base._settleInPlace(terrain);
     }
     this.cabAngle += (input.cabTurn || 0) * this.cabTurnRate * dt;
+
+    // "Holding the dig button should enable continuous digging" - requestDig()
+    // is already a no-op while a cycle is running (see its own idle check), so
+    // calling it every frame the button is held just chains cycles back to
+    // back the instant each one finishes, with no special repeat-timer needed.
+    if (input.digHeld) this.requestDig();
 
     let digEvent = null;
     if (this.digState !== 'idle') digEvent = this._updateDigCycle(dt, terrain);
