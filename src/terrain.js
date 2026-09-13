@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=86';
+import { Noise2D } from './noise.js?v=87';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -866,11 +866,14 @@ export class Terrain {
         const ci = cx / CELL;
         const distCells = Math.abs(i - ci);
 
-        // Narrow gorge right around the falls, widening into a real (if still
-        // narrow, steep-sided) valley floor downstream.
+        // Gorge floor around the falls, widening into a real (if still
+        // steep-sided) valley floor downstream. Widened from the original
+        // 5+3/9+10 - the camera clipped against the walls on anything but a
+        // dead-on view, and there wasn't enough flat ground up top to dig an
+        // alternate waterfall notch into.
         const halfWidth = t <= L2_T_FALL1
-          ? 5 + 3 * Math.min(1, t / L2_T_FALL1)
-          : 9 + 10 * Math.min(1, (t - L2_T_FALL1) / (1 - L2_T_FALL1));
+          ? 7 + 4 * Math.min(1, t / L2_T_FALL1)
+          : 11 + 11 * Math.min(1, (t - L2_T_FALL1) / (1 - L2_T_FALL1));
         const distToWallEdge = Math.max(0, distCells - halfWidth);
         // Walls taper down somewhat toward the valley's low exit end, so it
         // reads as opening up rather than staying a uniform-height trench for
@@ -911,8 +914,15 @@ export class Terrain {
 
         // Hardness: the falls' own face and the valley walls are bare rock;
         // the river corridor and valley floor are looser, diggable dirt.
+        // nearFallsFace used to harden the WHOLE valley width through this
+        // t-range, which meant the plateau above the falls and the landing
+        // pool right below it (both flat, not the actual sheer drop) came out
+        // nearly indestructible too - "the excavator doesn't dig well on the
+        // top zone" was this, not a top-zone-specific issue. The real curtain
+        // of falling water is only as wide as the falls itself (a narrow
+        // strip right on the centreline), so only harden that strip.
         let hard = Math.min(1, distToWallEdge / 9);
-        if (nearFallsFace) hard = Math.max(hard, 0.88);
+        if (nearFallsFace && distCells < 3) hard = Math.max(hard, 0.88);
         const outcrop = n2.fbm(i * 0.08, j * 0.08, 3);
         if (outcrop > 0.45) hard = Math.max(hard, (outcrop - 0.45) * 2.8);
         this.hardness[idx(i, j)] = Math.min(1, hard);
