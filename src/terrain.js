@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=61';
+import { Noise2D } from './noise.js?v=63';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -418,7 +418,17 @@ export class Terrain {
         const edgeDist = Math.min(i, GRID - 1 - i); // cells from the nearest real end
         const distToCoast = coastT(i) - t; // >0 inland of the coastline, <=0 at/past it
         const nearCoastT = THREE.MathUtils.clamp(1 - distToCoast / 0.5, 0, 1); // 0 = still far from the coast (narrow neck), 1 = at/past the coastline (wide headland)
-        const cliffWidthCells = 8 + 60 * Math.pow(nearCoastT, 1.25);
+        // Reach capped at 8+60=68 cells used to mean almost the ENTIRE coastline
+        // (only ~4 of 140 cells stayed clear dead-centre) got some non-zero
+        // headland contribution right at its own coastline threshold - a small
+        // rock/hardness bump whose peak height only just happened to sit above
+        // or below the sand/rock colour threshold from one column to the next,
+        // which is exactly what read as a jagged, pointed "wizard hat" pinching
+        // the sand from both sides rather than a clean, wide-open bay middle.
+        // Real headlands are localised to the two actual rocky points - capped
+        // at 8+22=30 cells (~25m) leaves a genuinely headland-free ~65m-wide
+        // clean stretch across the middle of the bay.
+        const cliffWidthCells = 8 + 22 * Math.pow(nearCoastT, 1.25);
         const cliffPotential = Math.pow(THREE.MathUtils.clamp(1 - edgeDist / cliffWidthCells, 0, 1), 1.6);
         const cliffOnset = THREE.MathUtils.clamp((t - 0.20) / 0.14, 0, 1);
         // The funnel taper above narrows the whole beach toward the sea - but the

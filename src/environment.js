@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=61';
-import { Noise2D } from './noise.js?v=61';
+import { GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX } from './terrain.js?v=63';
+import { Noise2D } from './noise.js?v=63';
 
 const decoNoise = new Noise2D(555);
 
@@ -601,17 +601,20 @@ export function buildSkirt(terrain) {
       // same real-strata technique in terrain.js's _colorAt) instead of every band
       // only ever darkening toward black - reads as actual banded rock, not a smudge.
       tmpC.lerp(rockLight, (1 - strata) * 0.15 * heightT);
-      // Grass only right at the very top of the rise, in noise-patches (not a
-      // uniform cap) - most of the visible height stays bare rock. Mixed warm/cool
-      // per its own noise field, same technique as the real terrain's clifftop grass,
-      // so this decorative surround doesn't read as a flatter single-tone green next
-      // to the real, richer-coloured terrain right beside it.
+      // Grass in noise-patches (not a uniform cap) atop the rise. The onset used
+      // to be y>34 - given typical rise commonly only reaches y~20-30 short of
+      // the very tallest peaks, that meant almost no visible cliff ever actually
+      // showed grass, real Cornish clifftops are grassed well down from their
+      // highest points, not just their summits. Mixed warm/cool per its own
+      // noise field, same technique as the real terrain's clifftop grass, so
+      // this decorative surround doesn't read as a flatter single-tone green
+      // next to the real, richer-coloured terrain right beside it.
       const grassPatchNoise = decoNoise.fbm(x * 0.09 + 400, z * 0.09 + 400, 3);
       const grassWarmthNoise = decoNoise.fbm(x * 0.05 + 900, z * 0.05 + 900, 3);
-      const grassAmount = THREE.MathUtils.clamp((y - 34) / 14, 0, 1)
-        * THREE.MathUtils.clamp((grassPatchNoise - 0.15) * 2.2, 0, 1);
+      const grassAmount = THREE.MathUtils.clamp((y - 16) / 12, 0, 1)
+        * THREE.MathUtils.clamp((grassPatchNoise - 0.05) * 1.8, 0, 1);
       tmpGrass.copy(grassPatch).lerp(grassWarm, THREE.MathUtils.clamp((grassWarmthNoise - 0.1) * 1.6, 0, 1));
-      tmpC.lerp(tmpGrass, grassAmount * 0.85);
+      tmpC.lerp(tmpGrass, grassAmount * 0.92);
       // Distance haze toward hazy far-hill blue-grey, and toward the sea horizon.
       tmpC.lerp(farHill, distT * distT * 0.55);
       colors[k * 3] = tmpC.r; colors[k * 3 + 1] = tmpC.g; colors[k * 3 + 2] = tmpC.b;
