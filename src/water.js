@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=60';
+import { GRID, CELL, SIZE, streamCenterX, coastT, warpX } from './terrain.js?v=61';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -763,9 +763,40 @@ export class WaterSim {
     sediment.set(next);
 
     // Moisture trace for terrain shading: wet where water is/has recently been.
+    // ROOT CAUSE of a SEPARATE reported artifact (a regular "comb" of small sandbar
+    // teeth with visible shadows along the bank - confirmed, via extensive live
+    // instrumentation, to be UNRELATED to the flux-transfer checkerboard fixed
+    // above: both terrain.height and water.depth are smooth right through this
+    // exact area, at both coarse and fine/render resolution, and the fine mesh's
+    // NORMALS/geometry match that smoothness - so the visible "teeth" cannot be
+    // geometry. Directly inspecting the fine mesh's baked vertex COLOUR (not its
+    // height) at the same live location showed a discrete jump between rows,
+    // traced back to THIS moisture update: a hard depth > 0.003 threshold fed
+    // into an exponential filter whose old gain (0.06) has a fixed point of
+    // 0.06 / (1 - 0.995) = 12, not 1 - so a cell continuously wet saturates at
+    // 12 and takes ~16s of being dry just to fall back under 1 (where the clamp
+    // in _colorAt's `wetT` actually starts changing), a far longer "sticky" memory
+    // than the decay time-constant alone (~6.6s) suggests. Right at the channel's
+    // marginal, near-threshold cells - confirmed live sampling several adjacent
+    // rows all sitting at depth 0.002-0.003, i.e. within noise of each other and
+    // of the 0.003 cutoff - this sub-millimetre, visually meaningless difference
+    // was enough to flip the binary target, and the saturating filter then froze
+    // whichever side a cell first landed on for a long time. The result: a
+    // persistent, essentially frozen wet/dry (P.mud/P.wetSand vs dry sand) mosaic
+    // along the bank, unrelated to any real depth difference, rendering as a
+    // "toothy" shadowed edge on geometrically smooth ground.
+    //
+    // Fix: (1) replace the hard threshold with a smooth ramp over a small depth
+    // range, so a marginal, near-constant depth produces a correspondingly small,
+    // stable moisture target instead of a coin-flip between 0 and 1; (2) fix the
+    // gain so the filter's own fixed point is exactly 1 (matching the clamp range
+    // _colorAt actually uses), removing the multi-second-long hysteresis that let
+    // a stale classification linger. Decay (0.995) is unchanged, so the ~6.6s
+    // "stays damp-looking for a while after the water recedes" feel is preserved -
+    // only the oversized ceiling and the hard edge are fixed.
     for (let k = 0; k < N * N; k++) {
-      const wet = depth[k] > 0.003 ? 1 : 0;
-      terrain.moisture[k] = terrain.moisture[k] * 0.995 + wet * 0.06;
+      const wetTarget = THREE.MathUtils.smoothstep(depth[k], 0.001, 0.01);
+      terrain.moisture[k] = terrain.moisture[k] * 0.995 + wetTarget * 0.005;
     }
   }
 

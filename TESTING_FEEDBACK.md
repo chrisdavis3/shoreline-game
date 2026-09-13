@@ -56,9 +56,43 @@ forever); a channel-wide relative-oscillation metric stayed flat/bounded
 blur-only fix, which grew monotonically over the same kind of window); river
 continues reaching the sea with no dry-out; no measurable frame-time impact.
 
-Residual, much milder issue noted during the first re-verification pass: at
-close zoom the sandbars poking into the channel from alternating banks form a
-fairly regular, evenly-spaced "comb" pattern rather than organic variation -
-flat, no geometry spikes, unrelated to the checkerboard mechanism above (still
-present, unchanged, with the new fix). Worth a follow-up pass if there's time;
-not urgent.
+### 2026-09-13 — "Sandbar comb" pattern along the bank (FIXED - was NOT the checkerboard)
+Follow-up to the residual note above: the user and a second live check both
+confirmed this was more than cosmetic - at zoom~60 near spawn, both banks
+showed a regular row of small triangular sandbar teeth with real cast shadows.
+Initially suspected as a leftover of the checkerboard fix above (a spatial,
+erosion-driven alternation rather than the temporal one already fixed), so
+that was investigated first: `terrain.height` (raw bedrock) and `water.depth`
+were both confirmed smooth, at coarse AND fine/render resolution, right
+through the exact reported location and timeframe (checked repeatedly, at
+t~42s and after 100-500s of fast-forwarded play) - so it was NOT bedrock
+erosion noise, and not the flux-transfer relay either.
+Ruled out, each via a direct live A/B test (change it, reload, compare):
+cosmetic fine-grain noise detail layer, Catmull-Rom bicubic interpolation of
+the fine terrain mesh (tested against plain bilinear too), and stale
+background fine-mesh refresh (tested with a forced full refresh).
+Root cause: found by comparing the fine mesh's baked vertex COLOUR (not its
+smooth height) at the live location - a discrete brightness jump between
+rows that height didn't have. Traced to the `moisture` field in water.js's
+`_erode()`: a hard `depth > 0.003` threshold fed into an exponential filter
+whose old gain (0.06) has a fixed point of 12, not 1 - so a continuously-wet
+cell saturates at 12 and takes ~16s of being dry before even starting to
+register as less wet (far longer than the ~6.6s decay time-constant alone
+suggests). Right at the channel's marginal cells - confirmed live, several
+adjacent rows all sitting at depth 0.002-0.003, i.e. within noise of each
+other and of the cutoff - that sub-millimetre, visually meaningless
+difference was enough to flip the binary target, and the saturating filter
+then froze whichever side a cell first landed on for a long time: a
+persistent, frozen wet/dry (mud vs. dry sand) mosaic along the bank,
+unrelated to any real depth difference, reading as a shadowed "toothy" edge
+on geometrically smooth ground.
+Fixed by (1) replacing the hard threshold with `THREE.MathUtils.smoothstep`
+over a small depth range, so a marginal, near-constant depth gives a
+correspondingly small, stable target instead of a coin-flip, and (2) fixing
+the filter's gain so its fixed point is exactly 1, removing the multi-
+second-long hysteresis. Decay is unchanged, so the "stays damp-looking for a
+while after the water recedes" feel is preserved.
+Verified: the bank reads as a clean, natural grid-scale staircase (no dense
+comb/teeth) at t~42s AND after 250s and 490s of fast-forwarded play, at the
+same zoom~60/near-spawn reproduction used to find it; `water.update` cost
+unchanged (~3.4ms/call).
