@@ -1,9 +1,10 @@
+import { CAVE_X,CAVE_BACK,CAVE_MOUTH } from './hidden-cave.js?v=108';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1, L2_TOP_H,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=107';
+} from './terrain.js?v=108';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -299,6 +300,7 @@ export class WaterSim {
     this._heightTex = mkFieldTexture();    // r=terrain height
 
     this.uniforms = {
+      uCave: {value:new THREE.Vector4(CAVE_X,CAVE_BACK,CAVE_MOUTH,getActiveLevel()==='level2'?1:0)},
       uTime: { value: 0 },
       uTideLevel: { value: this.tideLevel },
       uShallowColor: { value: new THREE.Color('#77a49a') },
@@ -412,6 +414,7 @@ export class WaterSim {
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
+        uniform vec4 uCave;
         uniform vec3 uShallowColor;
         uniform vec3 uDeepColor;
         uniform vec3 uFoam;
@@ -461,6 +464,7 @@ export class WaterSim {
         }
 
         void main() {
+          if(uCave.w>0.5 && abs(vWorldPos.x-uCave.x)<1.8 && vWorldPos.z>uCave.y && vWorldPos.z<uCave.z) discard;
           // Raised from 0.0015: at that threshold, sub-centimetre trace moisture
           // sitting in incidental terrain dips (nowhere near the actual river or
           // coastline) was rendering as full-brightness foam lines (see foamEdge

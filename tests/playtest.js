@@ -5,7 +5,7 @@ bar.style.cssText='position:fixed;bottom:46px;right:18px;z-index:40;display:flex
 bar.setAttribute('aria-label','Local playtest tools');
 function button(text, action){const b=document.createElement('button');b.textContent=text;b.onclick=action;bar.append(b);}
 button('Walk to hidden door',()=>{
- const g=window.__game,d=g.debug().waterfallDoor || g.debug().villageDoor;
+ const g=window.__game,d=g.debug().waterfallCave || g.debug().villageDoor;
  if(d){g.player.setSpawn(d.standX,d.standZ);g.stepFrame(1/30,2);}
 });
 button('Excavate the diversion',()=>{
@@ -29,3 +29,6 @@ button('Frame village',()=>{
 button('Show touch layout',()=>document.body.classList.toggle('touch'));
 button('Hide test tools',()=>bar.remove());
 document.body.append(bar);
+
+button('Approach waterfall cave',()=>{const g=window.__game,d=g.debug().waterfallCave;if(d){g.player.setSpawn(d.standX,d.mouthZ+2);g.player.facing=Math.PI;g.setZoom(16);}});
+button('Walk through waterfall',()=>{const g=window.__game;if(!g.debug().waterfallCave)return;const move=g.player.velocity.clone().set(0,0,-1);for(let i=0;i<42;i++){g.player.update(1/30,{moveVector:move,run:false},{SIZE:120});g.stepFrame(.001);if(g.debug().doorPopupShown)break;}});

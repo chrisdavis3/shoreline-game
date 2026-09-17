@@ -2,21 +2,21 @@ import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=107';
-import { WaterSim } from './water.js?v=107';
+} from './terrain.js?v=108';
+import { WaterSim } from './water.js?v=108';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=107';
-import { scatterRocks, Rock } from './rocks.js?v=107';
-import { Player } from './player.js?v=107';
-import { AudioSystem } from './audio.js?v=107';
-import { Particles } from './particles.js?v=107';
-import { Debris } from './debris.js?v=107';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=107';
-import { buildHiddenDoor } from './hidden-door.js';
+} from './environment.js?v=108';
+import { scatterRocks, Rock } from './rocks.js?v=108';
+import { Player } from './player.js?v=108';
+import { AudioSystem } from './audio.js?v=108';
+import { Particles } from './particles.js?v=108';
+import { Debris } from './debris.js?v=108';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=108';
+import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=108';
 import { buildMillValley } from './mill.js';
-import { Bulldozer, Excavator } from './vehicles.js?v=107';
+import { Bulldozer, Excavator } from './vehicles.js?v=108';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -36,7 +36,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 107;
+const APP_VERSION = 108;
 
 // ---------- renderer / scene / camera ----------
 
@@ -230,15 +230,16 @@ if (savedData) {
 // under them during priming - "grass floating in the air" by the river.
 let villageDoor = null;
 let mill = null;
-let waterfallDoor = null;
+let waterfallCave = null;
 if (ACTIVE_LEVEL_ID === 'level3') {
   mill = buildMillValley(terrain, water);
   scene.add(mill.group);
 } else if (ACTIVE_LEVEL_ID === 'level2') {
   scene.add(buildSkirtLevel2(terrain));
   scene.add(scatterPropsLevel2(terrain));
-  waterfallDoor = buildHiddenDoor(terrain);
-  scene.add(waterfallDoor.group);
+  waterfallCave = buildHiddenCave(terrain);
+  player.walkHeight = waterfallCave.walkHeight;
+  scene.add(waterfallCave.group);
 } else {
   scene.add(buildSkirt(terrain));
   const village = buildVillage(terrain);
@@ -549,6 +550,11 @@ function updateCamera(dt) {
     Math.cos(camYaw) * Math.cos(camPitch) * camDist,
   );
   const desiredPos = target.clone().add(offset);
+  if (waterfallCave && insideCave(player.pos.x,player.pos.z) && !drivingVehicle) {
+    // Bring the camera through the water too, so the shelter is revealed only inside.
+    desiredPos.set(CAVE_X,waterfallCave.floorY+2.1,CAVE_MOUTH-.15);
+    target.set(CAVE_X,waterfallCave.floorY+1.4,CAVE_BACK);
+  }
   camera.position.lerp(desiredPos, Math.min(1, dt * 6));
   camera.lookAt(target);
 
@@ -1174,7 +1180,7 @@ let doorPopupShown = false;
 let doorDismissed = false;
 
 function nearVillageDoor() {
-  const door = ACTIVE_LEVEL_ID === 'level2' ? waterfallDoor : villageDoor;
+  const door = ACTIVE_LEVEL_ID === 'level2' ? waterfallCave : villageDoor;
   if (!door) return false;
   const dx = door.standX - player.pos.x, dz = door.standZ - player.pos.z;
   return Math.hypot(dx, dz) < DOOR_RANGE;
@@ -1182,6 +1188,18 @@ function nearVillageDoor() {
 
 function updateDoorUI() {
   if (ACTIVE_LEVEL_ID === 'level3' || drivingVehicle) return;
+  if (ACTIVE_LEVEL_ID === 'level2') {
+    if (!doorPopupShown && reachedCavePassage(player.pos.x,player.pos.z)) {
+      doorPopupShown=true;
+      const entryPos=player.pos.clone();
+      player.setSpawn(CAVE_X,CAVE_MOUTH+2.5);
+      saveState({terrain,water,rocks,player,vehicles,levelId:ACTIVE_LEVEL_ID});
+      player.pos.copy(entryPos);
+      localStorage.setItem('shoreline_active_level','level3');
+      location.href=location.pathname;
+    }
+    return;
+  }
   const near = nearVillageDoor();
   if (near && !doorPopupShown && !doorDismissed) {
     doorPopupShown = true;
@@ -1192,12 +1210,6 @@ function updateDoorUI() {
 }
 
 if (doorPopupEl) {
-  if (ACTIVE_LEVEL_ID === 'level2') {
-    doorPopupEl.querySelector('.lsTitle').textContent = 'Behind the falling water';
-    doorPopupEl.querySelector('.lsSubtitle').textContent = 'An old door in the rock.';
-    doorPopupEl.querySelector('.lsCardTitle').textContent = 'Stillwater Mill';
-    doorPopupEl.querySelector('.lsCardDesc').textContent = 'Beyond the gorge, a divided river and a waterwheel waiting to turn.';
-  }
   const gorgeCard = document.getElementById('gorgeCard');
   const dismissBtn = document.getElementById('lsDismiss');
   if (gorgeCard) {
@@ -1426,7 +1438,7 @@ window.__game = {
     touchDigHeld, touchSmoothHeld,
     drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
     vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
-    villageDoor, waterfallDoor, doorPopupShown,
+    villageDoor, waterfallCave, doorPopupShown,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,

@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { Noise2D } from './noise.js?v=107';
+import { Noise2D } from './noise.js?v=108';
 import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.

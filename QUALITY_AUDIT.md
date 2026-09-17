@@ -53,3 +53,9 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 ## Release practice
 
 Fetch origin/main and inspect changes first. The local branch is master; Pages publishes main. Use ordinary merges and preserve remote work. Never use an ours-only merge to bypass reconciliation again. Bump version.txt, APP_VERSION and module query versions together. Confirm Pages build and the actual public version after pushing; unverified work stays local.
+
+## Release 108: waterfall cave correction
+
+Removed the wooden door entirely. The gorge now has a sheltered rock passage with a walkable floor behind a wider, dense waterfall curtain. Camera moves into the shelter after the player crosses the water. Walking into the back of the cave enters level 3 directly; there is no proximity popup outside the waterfall. Save format and simulation terrain remain unchanged. Automated player movement checks crossing and passage arrival, and rejects exterior/side trigger positions. Local visual and transition checks use explicit QA approach positioning, not a full gorge traversal.
+
+Local browser verification: exterior waterfall conceals the opening; inside view has no door; continuous player-update steps entered Stillwater Mill. Gorge save is written outside the cave for the return trip. Cave floor clears the current saved terrain; the water surface is masked inside the shelter, without altering flow simulation. The cave remains stylised rock geometry and needs further material detailing.

@@ -1,10 +1,11 @@
-import { buildCoastalVillage } from './village.js?v=107';
+import { CAVE_WATER } from './hidden-cave.js?v=108';
+import { buildCoastalVillage } from './village.js?v=108';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=107';
-import { Noise2D } from './noise.js?v=107';
+} from './terrain.js?v=108';
+import { Noise2D } from './noise.js?v=108';
 
 const decoNoise = new Noise2D(555);
 
@@ -1000,7 +1001,7 @@ export function buildWaterfallCascade(terrain) {
   const topZ = L2_T_FALL0 * SIZE, botZ = L2_T_FALL1 * SIZE;
   const topY = terrain.sampleHeightBilinear(L2_LIP_X, Math.max(0.5, topZ)) + 0.5;
   const botY = terrain.sampleHeightBilinear(L2_LIP_X, botZ) - 1.0;
-  const width = 5.5;
+  const width = 7.2;
   const height = Math.max(4, topY - botY);
 
   const geo = new THREE.PlaneGeometry(width, 1, 10, 44);
@@ -1013,14 +1014,14 @@ export function buildWaterfallCascade(terrain) {
     // Arcs slightly clear of the rock face partway down, the way a real falls
     // doesn't cling flat to the cliff behind it.
     const bow = Math.sin(v * Math.PI) * 0.9;
-    pos.setXYZ(i, px, y, z + bow);
+    pos.setXYZ(i, px, y, THREE.MathUtils.lerp(CAVE_WATER, topZ, Math.max(0,(v-.65)/.35)) + bow * Math.max(0,(v-.65)/.35));
   }
   geo.computeVertexNormals();
 
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     side: THREE.DoubleSide,
-    depthWrite: false,
+    depthWrite: true,
     uniforms: {
       uTime: { value: 0 },
       uFoam: { value: new THREE.Color('#eef6fa') },
@@ -1050,7 +1051,7 @@ export function buildWaterfallCascade(terrain) {
         float streak = noise(p) * 0.6 + noise(p * 2.3 + 11.0) * 0.4;
         float edge = smoothstep(0.0, 0.1, vUv.x) * smoothstep(1.0, 0.9, vUv.x);
         float baseFoam = smoothstep(0.0, 0.22, vUv.y) * (1.0 - smoothstep(0.22, 0.55, vUv.y));
-        float alpha = clamp((0.32 + streak * 0.5) * edge + baseFoam * 0.5, 0.0, 0.92);
+        float alpha = clamp((0.94 + streak * 0.06) * edge + baseFoam * 0.5, 0.0, 1.0);
         vec3 color = mix(uWater, uFoam, clamp(streak * 0.6 + baseFoam * 0.8, 0.0, 1.0));
         gl_FragColor = vec4(color, alpha);
       }
@@ -1059,7 +1060,7 @@ export function buildWaterfallCascade(terrain) {
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(L2_LIP_X, 0, 0);
-  mesh.renderOrder = 2;
+  mesh.renderOrder = 3;
   mesh.frustumCulled = false;
   return { mesh, height, update(t) { mat.uniforms.uTime.value = t; } };
 }

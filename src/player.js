@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { warpX } from './terrain.js?v=107';
+import { warpX } from './terrain.js?v=108';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this
@@ -200,8 +200,10 @@ export class Player {
     this.onRockScrape = null;
   }
 
+  groundHeight(x,z) { return this.walkHeight ? this.walkHeight(x,z) : this.terrain.sampleHeightBilinear(x,z); }
+
   setSpawn(x, z) {
-    this.pos.set(x, this.terrain.sampleHeightBilinear(x, z), z);
+    this.pos.set(x, this.groundHeight(x, z), z);
     this.mesh.position.set(warpX(this.pos.x, this.pos.z), this.pos.y, this.pos.z);
   }
 
@@ -224,9 +226,9 @@ export class Player {
 
     // slope resistance: slow down on steep ground
     const nx = this.pos.x, nz = this.pos.z;
-    const h0 = this.terrain.sampleHeightBilinear(nx, nz);
-    const hX = this.terrain.sampleHeightBilinear(nx + 0.3, nz);
-    const hZ = this.terrain.sampleHeightBilinear(nx, nz + 0.3);
+    const h0 = this.groundHeight(nx, nz);
+    const hX = this.groundHeight(nx + 0.3, nz);
+    const hZ = this.groundHeight(nx, nz + 0.3);
     const slope = Math.min(1, (Math.abs(hX - h0) + Math.abs(hZ - h0)) / 0.6);
     const slopeFactor = 1 - Math.min(0.6, slope * 0.8);
 
@@ -237,7 +239,7 @@ export class Player {
 
     // Snap to the ground almost immediately - there's no falling/jumping here, so any
     // lag just reads as the character floating above or sinking into fast terrain changes.
-    const targetY = this.terrain.sampleHeightBilinear(this.pos.x, this.pos.z);
+    const targetY = this.groundHeight(this.pos.x, this.pos.z);
     this.pos.y += (targetY - this.pos.y) * Math.min(1, 30 * dt);
 
     this.speed = Math.sqrt(this.velocity.x ** 2 + this.velocity.z ** 2);
