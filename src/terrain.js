@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { Noise2D } from './noise.js?v=104';
+import { Noise2D } from './noise.js?v=105';
 import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
@@ -18,7 +18,7 @@ import { millHeight, bypassX } from './mill-layout.js';
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
 export const TERRAIN_VERSION = 7;
-export const terrainVersionFor = level => level === 'level2' ? 9 : TERRAIN_VERSION;
+export const terrainVersionFor = level => level === 'level2' ? 9 : level === 'level3' ? 10 : TERRAIN_VERSION;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)

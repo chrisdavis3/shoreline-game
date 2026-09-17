@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {Terrain,setActiveLevel,CELL,GRID} from '../src/terrain.js?v=104';
-import {WaterSim} from '../src/water.js?v=104';
+import {Terrain,setActiveLevel,CELL,GRID} from '../src/terrain.js?v=105';
+import {WaterSim} from '../src/water.js?v=105';
 import {millRaceX,bypassX,readMillFlow,millRpmForFlow} from '../src/mill-layout.js';
 
 setActiveLevel('level3');
