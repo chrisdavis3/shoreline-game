@@ -1191,10 +1191,8 @@ function updateDoorUI() {
   if (ACTIVE_LEVEL_ID === 'level2') {
     if (!doorPopupShown && reachedCavePassage(player.pos.x,player.pos.z)) {
       doorPopupShown=true;
-      const entryPos=player.pos.clone();
       player.setSpawn(CAVE_X,CAVE_MOUTH+2.5);
       saveState({terrain,water,rocks,player,vehicles,levelId:ACTIVE_LEVEL_ID});
-      player.pos.copy(entryPos);
       localStorage.setItem('shoreline_active_level','level3');
       location.href=location.pathname;
     }
