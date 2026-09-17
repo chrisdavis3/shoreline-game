@@ -1,6 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { MILL, millRaceX, bypassX, valleyFloor, readMillFlow, millRpmForFlow } from './mill-layout.js';
-import { CELL, GRID, SIZE } from './terrain.js?v=105';
+import { CELL, GRID, SIZE } from './terrain.js?v=106';
 
 // A working mill court: all motion and the fountain respond to measured river
 // discharge. Scenery is deliberately separate from the hydraulic simulation.

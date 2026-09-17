@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { L2_LIP_X, L2_T_FALL1, SIZE } from './terrain.js?v=105';
+import { L2_LIP_X, L2_T_FALL1, SIZE } from './terrain.js?v=106';
 
 export function buildHiddenDoor(terrain) {
   const group = new THREE.Group();

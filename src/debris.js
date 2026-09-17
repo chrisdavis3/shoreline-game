@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { SIZE, CELL, streamCenterX, coastT, warpX } from './terrain.js?v=105';
+import { SIZE, CELL, streamCenterX, coastT, warpX } from './terrain.js?v=106';
 
 // Small floating leaves/twigs that ride the stream's ACTUAL simulated current
 // (water.flowAt's real per-cell velX/velZ, not a scripted path) from source to

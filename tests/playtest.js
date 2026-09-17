@@ -1,7 +1,7 @@
 // Explicit local-only QA controls; never loaded on the published game.
 import {millRaceX,bypassX} from '../src/mill-layout.js';
 const bar=document.createElement('aside');
-bar.style.cssText='position:fixed;bottom:46px;right:18px;z-index:40;display:flex;gap:6px;padding:8px;background:#152722;color:white;font:11px sans-serif';
+bar.style.cssText='position:fixed;bottom:46px;right:18px;z-index:40;display:flex;flex-wrap:wrap;max-width:calc(100vw - 52px);gap:6px;padding:8px;background:#152722;color:white;font:11px sans-serif';
 bar.setAttribute('aria-label','Local playtest tools');
 function button(text, action){const b=document.createElement('button');b.textContent=text;b.onclick=action;bar.append(b);}
 button('Walk to hidden door',()=>{
@@ -22,5 +22,6 @@ button('Advance river 30 seconds',()=>{
  g.terrain.refreshFineMeshFully();g.water._syncMeshAttrs(g.terrain);g.stepFrame(1/30);
 });
 button('Frame mill court',()=>{window.__game.player.setSpawn(78,65);window.__game.setZoom(80);});
+button('Show touch layout',()=>document.body.classList.toggle('touch'));
 button('Hide test tools',()=>bar.remove());
 document.body.append(bar);

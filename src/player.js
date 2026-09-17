@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { warpX } from './terrain.js?v=105';
+import { warpX } from './terrain.js?v=106';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
 // modelled after a real beach photo rather than the generic adult silhouette this

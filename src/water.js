@@ -3,7 +3,7 @@ import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1, L2_TOP_H,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=105';
+} from './terrain.js?v=106';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -322,6 +322,7 @@ export class WaterSim {
         varying float vDepth;
         varying float vFlow;
         varying vec2 vFlowDir;
+        varying vec2 vSurfaceSlope;
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
@@ -366,7 +367,9 @@ export class WaterSim {
           float aDepth = depthFlow.r;
           vDepth = aDepth;
           vFlow = depthFlow.g;
-          vFlowDir = sampleBilinear(uVelTex, aFieldUV).rg;
+          vec4 flowField = sampleBilinear(uVelTex, aFieldUV);
+          vFlowDir = flowField.rg;
+          vSurfaceSlope = flowField.ba;
           float terrainH = smoothBed(aFieldUV);
 
           vec3 pos = position;
@@ -405,6 +408,7 @@ export class WaterSim {
         varying float vDepth;
         varying float vFlow;
         varying vec2 vFlowDir;
+        varying vec2 vSurfaceSlope;
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
@@ -481,9 +485,16 @@ export class WaterSim {
           // actually reads as a moving current, and sped up so the motion is
           // obvious within a couple of seconds rather than a slow crawl.
           float flowMag = length(vFlowDir);
-          vec2 dir = flowMag > 0.02 ? vFlowDir / flowMag : vec2(0.0, 1.0);
-          vec2 advected = vWorldPos.xz * 0.65 - vFlowDir * uTime * 0.7;
-          float streak = valueNoise(advected) * 0.7 + valueNoise(advected * 2.1 + 17.0) * 0.3;
+          // Two bounded advection phases crossfade before either wraps.
+          // Multiplying spatially varying velocity by the entire elapsed time
+          // stretched the texture into ever-finer swirls in long sessions.
+          float phaseA = fract(uTime * 0.12);
+          float phaseB = fract(uTime * 0.12 + 0.5);
+          vec2 uv = vWorldPos.xz * 0.65;
+          vec2 flow = vFlowDir / max(1.0, flowMag) * 2.0;
+          float a = valueNoise(uv - flow * phaseA);
+          float b = valueNoise(uv - flow * phaseB);
+          float streak = mix(a, b, abs(phaseA - 0.5) * 2.0);
           float depthFade = (1.0 - smoothstep(0.25, 2.0, vDepth));
           // Measured live in the actual channel (window.__game.water.flowSpeed
           // at the deepest/fastest part of a mid-river cell): flowMag there
@@ -497,16 +508,12 @@ export class WaterSim {
           // under foam (broken, aerated water doesn't hold a sharp light pattern).
           float causticVis = caustics(vWorldPos.xz, uTime) * (1.0 - smoothstep(0.05, 0.9, vDepth));
           base += causticVis * 0.035;
-          // The real per-vertex normal used to come from THREE's computeVertexNormals
-          // on the CPU - but position.y is now driven entirely by the vertex shader
-          // (see RENDER_SS notes above), so the CPU-side geometry is flat and that
-          // normal would be meaningless. Reconstructing it here from screen-space
-          // derivatives of vWorldPos is both correct (it sees the real ripple/crest
-          // bumps the shader just applied) and cheaper than a periodic CPU pass over
-          // a mesh that's now denser than it used to be.
-          vec3 fdx = dFdx(vWorldPos), fdy = dFdy(vWorldPos);
-          vec3 nrm = normalize(cross(fdx, fdy));
-          if (nrm.y < 0.0) nrm = -nrm;
+          // Interpolated surface gradients avoid lighting every mesh triangle
+          // as a separate face. Gentle ripples add detail without a grid pattern.
+          vec2 rippleSlope = vec2(cos(vWorldPos.x * 1.3 + uTime * 1.6),
+                                 sin(vWorldPos.z * 1.1 - uTime * 1.3)) * 0.018;
+          vec3 nrm = normalize(vec3(-vSurfaceSlope.x + rippleSlope.x, 1.0,
+                                   -vSurfaceSlope.y + rippleSlope.y));
           float fresnel = pow(1.0 - clamp(dot(nrm, normalize(cameraPosition - vWorldPos)), 0.0, 1.0), 3.0);
           vec3 sky = vec3(0.72, 0.80, 0.82);
           base = mix(base, sky, fresnel * 0.35);
@@ -546,6 +553,7 @@ export class WaterSim {
           // end's deliberate translucency at all (depthN is ~0 there).
           float alpha = mix(0.48, 0.94, depthN);
           alpha = mix(alpha, 0.88, foam * 0.55);
+          alpha *= smoothstep(0.01, 0.09, vDepth);
           gl_FragColor = vec4(color, alpha);
         }
       `,
@@ -1026,6 +1034,16 @@ export class WaterSim {
         dfData[p + 1] = this.flowSpeed[k];
         velData[p] = this.velX[k];
         velData[p + 1] = this.velZ[k];
+        // Reuse the unused velocity texture channels: no new texture or draw.
+        const left = idx(Math.max(0, i - 1), j), right = idx(Math.min(N - 1, i + 1), j);
+        const back = idx(i, Math.max(0, j - 1)), front = idx(i, Math.min(N - 1, j + 1));
+        const surface = th[k] + d;
+        const hl = this.depth[left] > .015 ? th[left] + this.depth[left] : surface;
+        const hr = this.depth[right] > .015 ? th[right] + this.depth[right] : surface;
+        const hb = this.depth[back] > .015 ? th[back] + this.depth[back] : surface;
+        const hf = this.depth[front] > .015 ? th[front] + this.depth[front] : surface;
+        velData[p + 2] = (hr - hl) / (2 * CELL);
+        velData[p + 3] = (hf - hb) / (2 * CELL);
         hData[p] = th[k];
       }
     }
