@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { L2_LIP_X, L2_T_FALL1, SIZE } from './terrain.js?v=110';
+import { L2_LIP_X, L2_T_FALL1, SIZE } from './terrain.js?v=111';
 
 // The rock shelter sits in front of the heightfield cliff; the falling sheet
 // bows out over its mouth. No terrain carving or save migration is needed.

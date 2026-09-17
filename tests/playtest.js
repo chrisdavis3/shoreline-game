@@ -1,4 +1,4 @@
-import {streamCenterX} from '../src/terrain.js?v=110';
+import {streamCenterX} from '../src/terrain.js?v=111';
 // Explicit local-only QA controls; never loaded on the published game.
 import {millRaceX,bypassX} from '../src/mill-layout.js';
 const bar=document.createElement('aside');

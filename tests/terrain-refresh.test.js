@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {Terrain,GRID,setActiveLevel} from '../src/terrain.js?v=110';
+import {Terrain,GRID,setActiveLevel} from '../src/terrain.js?v=111';
 setActiveLevel('level1');
 const terrain=new Terrain();
 // Model a bed-height change from the solver (it does not mark a player-edit patch).

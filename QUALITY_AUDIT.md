@@ -44,7 +44,7 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 
 1. Beach scenery: cottages now have architectural detail, but their arrangement needs lanes, gardens and a better relationship to the actual village; background cliff polygons remain conspicuous. The landscape still lacks the real place's architectural and geological detail. Improve based on actual references and compare broad views, not just the player's immediate surroundings.
 2. Banks: the regular comb pattern is fixed in release 110. Continue checking bank shapes and water intersections under player digging and long erosion runs; the source channel is still too uniform.
-3. River decoration: some static grass/pebbles end up in the active stream. Re-anchor or suppress them as the bank erodes; do not hide movable gameplay rocks.
+3. River decoration: release 111 re-anchors beach pebbles/driftwood and suppresses flooded or disturbed grass. Gorge decorations still need the same review; real mobile performance remains unmeasured.
 4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the concealed cave. The core mill test does not cover this level.
 5. Mill composition: improve the view of the wheel, river fork and fountain together, particularly in portrait. Existing trees and stonework are still visibly stylised. Garden-complete text should distinguish historical completion from a currently stopped pump.
 6. Full physical playthrough: drive both machines and solve using player controls, check spoil placement around blocked/boundary cells, and test saving mid-action. The automated diversion uses the terrain API, not a vehicle-control replay.
@@ -69,3 +69,10 @@ Release 109 follow-up: unload autosave keeps the return position outside the cav
 - Before/after screenshots from the same saved beach near z=30 show the regular transverse ridges removed during running simulation. Phone viewport 390x844 with touch layout also shows continuous banks; no script/shader errors logged. This is layout testing, not hardware performance validation.
 - Eight-minute untouched mill and excavated diversion test passed: discharge 0.03642, wheel 5.10 rpm after diversion; finite water, conserved earth and stagnant-water checks pass.
 - Investigated interpolation of water elevation; reverted that experiment after it did not remove the ridges. Only the terrain scan correction is included.
+
+## Release 111: beach scenery follows water and terrain
+
+- Added a bounded update for existing beach decoration batches (256 instances per frame). Pebbles, driftwood and grass follow the current terrain height; grass is suppressed in water deeper than 6cm and over freshly disturbed ground. A 2.5cm reappearance threshold prevents flicker at shallow wet edges.
+- Only explicitly registered decorative instances change. No gameplay rocks, hydraulic obstructions, terrain, flow, saved state or cave progression are modified. No extra draw calls are introduced, though existing decorative batches now disable stale static-bound culling and update instance buffers as needed. Real-device performance remains unverified.
+- Regression tests cover eroded bed following, submerged grass suppression, wet-edge hysteresis, restoration of original geometry on dry ground, disturbed grass and untouched unregistered objects.
+- Desktop and 390x844 touch-layout screenshots show the active stream clear of grass while its banks retain vegetation. Local rendering logged no script/shader errors. Pebbles remain visible under shallow water, grounded on the bed.

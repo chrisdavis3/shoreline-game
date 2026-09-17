@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import * as THREE from '../vendor/three.module.js';
+import {GroundedScenery} from '../src/grounded-scenery.js?v=111';
+let ground=4,depth=0;
+const terrain={sampleHeightBilinear:()=>ground,cellIndexAt:()=>0,disturbance:new Float32Array(1)};
+const water={depthAt:()=>depth};
+const scenery=new GroundedScenery(terrain,water);
+const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(),new THREE.MeshBasicMaterial(),3);
+const matrix=new THREE.Matrix4().makeTranslation(2,4,3);
+for(let i=0;i<3;i++)mesh.setMatrixAt(i,matrix);
+scenery.add(mesh,0,2,3,0,true);scenery.add(mesh,1,2,3,.1,false);
+// Third instance stands in for an unrelated gameplay object: never registered.
+const original=mesh.instanceMatrix.array.slice(32,48);
+ground=2;depth=.2;scenery.update();
+assert.equal(mesh.instanceMatrix.array[0],0,'Submerged grass is suppressed');
+assert.ok(Math.abs(mesh.instanceMatrix.array[29]-2.1)<1e-5,'Pebble follows eroded bed');
+assert.equal(mesh.instanceMatrix.array[16],1,'Submerged pebbles retain geometry');
+depth=.04;scenery.update();assert.equal(mesh.instanceMatrix.array[0],0,'Shallow oscillations do not flicker grass');
+depth=0;scenery.update();assert.equal(mesh.instanceMatrix.array[0],1,'Dry grass restores original scale');
+terrain.disturbance[0]=1;scenery.update();assert.equal(mesh.instanceMatrix.array[0],0,'Digging clears decorative grass');
+assert.deepEqual(mesh.instanceMatrix.array.slice(32,48),original,'Unregistered objects stay untouched');
+console.log('PASS: scenery follows eroded ground, hides flooded/dug grass, preserves unrelated objects');

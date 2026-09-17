@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {Terrain,setActiveLevel} from '../src/terrain.js?v=110';
-import {buildCoastalVillage} from '../src/village.js?v=110';
+import {Terrain,setActiveLevel} from '../src/terrain.js?v=111';
+import {buildCoastalVillage} from '../src/village.js?v=111';
 
 setActiveLevel('level1');
 const terrain=new Terrain();

@@ -1,11 +1,12 @@
-import { CAVE_WATER } from './hidden-cave.js?v=110';
-import { buildCoastalVillage } from './village.js?v=110';
+import { GroundedScenery } from './grounded-scenery.js?v=111';
+import { CAVE_WATER } from './hidden-cave.js?v=111';
+import { buildCoastalVillage } from './village.js?v=111';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=110';
-import { Noise2D } from './noise.js?v=110';
+} from './terrain.js?v=111';
+import { Noise2D } from './noise.js?v=111';
 
 const decoNoise = new Noise2D(555);
 
@@ -272,8 +273,9 @@ export function buildSurfTube(waterUniforms) {
 }
 
 // Instanced decorative props: pebbles, grass tufts, driftwood - scattered by noise so they read as natural clutter.
-export function scatterProps(terrain) {
+export function scatterProps(terrain,water) {
   const group = new THREE.Group();
+  const grounded=new GroundedScenery(terrain,water);
 
   // Pebbles
   const pebbleGeo = new THREE.DodecahedronGeometry(1, 0);
@@ -304,6 +306,7 @@ export function scatterProps(terrain) {
     dummy.scale.set(scale, scale * 0.7, scale);
     dummy.updateMatrix();
     pebbles.setMatrixAt(pc, dummy.matrix);
+    grounded.add(pebbles,pc,x,z,scale*.3);
     // Pebbles right at the waterline (small coast - t gap) read darker/wetter,
     // like the real dark, damp rocks scattered at a tideline - drier ones further
     // up the beach pick a random tone from the drier end of the palette.
@@ -351,6 +354,7 @@ export function scatterProps(terrain) {
       dummy.scale.set(scaleXZ, scaleY, scaleXZ);
       dummy.updateMatrix();
       grass.setMatrixAt(gc, dummy.matrix);
+      grounded.add(grass,gc,x,z,0,true);
       const warmth = decoNoise.fbm(x * 0.15 + 700, z * 0.15 + 700, 2) * 0.5 + 0.5;
       tmpBlade.copy(grassCool).lerp(grassWarmC, warmth).multiplyScalar(0.85 + Math.random() * 0.3);
       grass.setColorAt(gc, tmpBlade);
@@ -419,6 +423,7 @@ export function scatterProps(terrain) {
       dummy.scale.set(scaleXZ, scaleY, scaleXZ);
       dummy.updateMatrix();
       cliffGrass.setMatrixAt(cgc, dummy.matrix);
+      grounded.add(cliffGrass,cgc,x,z,0,true);
       // Clifftops catch more open sky/sun than the sheltered dune band, so bias
       // warmer/golder on average - matches the reference photos' sunlit headland turf.
       const warmth = decoNoise.fbm(x * 0.15 + 700, z * 0.15 + 700, 2) * 0.5 + 0.65;
@@ -445,6 +450,7 @@ export function scatterProps(terrain) {
     dummy.scale.setScalar(0.6 + Math.random() * 0.8);
     dummy.updateMatrix();
     wood.setMatrixAt(n, dummy.matrix);
+    grounded.add(wood,n,x,z,.1);
   }
   group.add(wood);
 
@@ -478,7 +484,8 @@ export function scatterProps(terrain) {
   lintel.castShadow = true;
   archGroup.add(lintel);
   group.add(archGroup);
-
+  grounded.update(grounded.items.length);
+  group.userData.updateScenery=()=>grounded.update();
   return group;
 }
 

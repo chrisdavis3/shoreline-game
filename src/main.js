@@ -2,21 +2,21 @@ import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=110';
-import { WaterSim } from './water.js?v=110';
+} from './terrain.js?v=111';
+import { WaterSim } from './water.js?v=111';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=110';
-import { scatterRocks, Rock } from './rocks.js?v=110';
-import { Player } from './player.js?v=110';
-import { AudioSystem } from './audio.js?v=110';
-import { Particles } from './particles.js?v=110';
-import { Debris } from './debris.js?v=110';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=110';
-import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=110';
+} from './environment.js?v=111';
+import { scatterRocks, Rock } from './rocks.js?v=111';
+import { Player } from './player.js?v=111';
+import { AudioSystem } from './audio.js?v=111';
+import { Particles } from './particles.js?v=111';
+import { Debris } from './debris.js?v=111';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=111';
+import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=111';
 import { buildMillValley } from './mill.js';
-import { Bulldozer, Excavator } from './vehicles.js?v=110';
+import { Bulldozer, Excavator } from './vehicles.js?v=111';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -36,7 +36,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 110;
+const APP_VERSION = 111;
 
 // ---------- renderer / scene / camera ----------
 
@@ -228,6 +228,7 @@ if (savedData) {
 // staircase). Placing decoration first meant grass/pebbles near the banks
 // were pinned to the PRE-erosion height, then the ground moved out from
 // under them during priming - "grass floating in the air" by the river.
+let beachScenery = null;
 let villageDoor = null;
 let mill = null;
 let waterfallCave = null;
@@ -245,7 +246,8 @@ if (ACTIVE_LEVEL_ID === 'level3') {
   const village = buildVillage(terrain);
   scene.add(village.group);
   villageDoor = village.door;
-  scene.add(scatterProps(terrain));
+  beachScenery=scatterProps(terrain,water);
+  scene.add(beachScenery);
 }
 
 // ---------- vehicles ----------
@@ -1376,6 +1378,7 @@ function stepFrame(dt, elapsedTime) {
   water.update(dt, terrain);
   if (mill) mill.update(dt);
   terrain.update(dt);
+  if(beachScenery)beachScenery.userData.updateScenery();
   particles.update(dt);
   debris.update(dt, elapsedTime);
 
