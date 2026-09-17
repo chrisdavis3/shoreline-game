@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=108';
+import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=109';
 
 // Static architecture is merged by material after placement. Detail should not
 // turn a small village into hundreds of separate draw calls on a phone.
