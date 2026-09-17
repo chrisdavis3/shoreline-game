@@ -1,3 +1,8 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Shoreline</title>
 <style>
   :root { color-scheme: dark; }
@@ -55,7 +60,7 @@
     text-shadow: 0 1px 3px rgba(0,0,0,0.7); text-align: center; z-index: 10;
     pointer-events: none; display: none;
   }
-  body.touch #vehicleHud { bottom: auto; top: 54px; }
+  body.touch #vehicleHud { bottom: auto; top: 54px; } /* keep clear of the touch button stack */
   body.touch #vehiclePrompt { bottom: auto; top: 90px; }
 
   #filmGrade {
@@ -157,14 +162,36 @@
     touch-action: manipulation;
   }
   .tbtn.active { background: rgba(255,255,255,0.4); color: #10201d; }
+  /* Suppress the OS text-selection/"Copy" call-out everywhere in the touch UI, not
+     just on buttons - a long-press on the dig/joystick zones triggered it too. */
   #touchUI, #touchUI * {
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
   #zoomBtns { display: flex; gap: 8px; }
   #zoomBtns .tbtn { width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; border-radius: 50%; }
 </style>
-
+<link rel="stylesheet" href="./src/interface.css?v=104" />
+</head>
+<body>
 <div id="app"></div>
+<header id="placeTitle"><div id="chapterLabel">SHORELINE</div><h1 id="placeName">Mawgan Porth</h1></header>
+<nav id="fieldTools" aria-label="Game tools"><button id="overviewBtn">Overview</button><button id="helpBtn" aria-label="Show controls">Controls</button></nav>
+<section id="millObjective" hidden aria-label="Watermill objective">
+  <div class="eyebrow">Restore the mill</div><h2 id="millStatus">Bring the river back to the mill</h2>
+  <p id="millTip">Clear the silted right fork upstream. Redirect the river to turn the wheel and bring the fountain back to life.</p>
+  <div class="millReadout"><span id="millRpm">0.0</span> RPM <span>· waterwheel</span></div>
+  <progress id="millProgress" max="1" value="0" aria-label="Garden water supply"></progress>
+</section>
+<dialog id="controlsDialog" aria-labelledby="controlsTitle">
+  <button id="closeHelp" class="dialogClose" aria-label="Close controls">×</button>
+  <div class="eyebrow">Field guide</div><h2 id="controlsTitle">Make your own course.</h2>
+  <dl class="controlsGrid"><dt>Walk</dt><dd>WASD or arrow keys. Hold Space to sprint.</dd>
+  <dt>Move earth</dt><dd>Hold left click near your character to shovel. Each scoop builds a pile beside the hole. Right click smooths the ground.</dd>
+  <dt>Stones & machines</dt><dd>Walk close and press E to pick up, enter or exit.</dd>
+  <dt>Drive</dt><dd>W / S forward and reverse, A / D steer. Dig lowers the bulldozer blade; hold dig for repeated excavator scoops. Z / X rotates the excavator cab.</dd>
+  <dt>Look around</dt><dd>Scroll to zoom. Q or [ / ] rotates the view. Overview shows the landscape.</dd>
+  <dt>Touchscreen</dt><dd>Drag the left side to walk. Hold Dig or Smooth to work the ground in front of you. Drag the right side to look around. Pick up enters nearby machines. Hold Sprint to run.</dd></dl>
+</dialog>
 
 <div id="loading">
   <div class="title">Shoreline</div>
@@ -221,7 +248,7 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+    "three": "./vendor/three.module.js"
   }
 }
 </script>
@@ -237,11 +264,13 @@
   var params = new URLSearchParams(location.search);
   var requested = params.get('level');
   var stored = localStorage.getItem('shoreline_active_level');
-  var level = (requested === 'level1' || requested === 'level2') ? requested : (stored || 'level1');
+  var level = ['level1','level2','level3'].includes(requested) ? requested : (['level1','level2','level3'].includes(stored) ? stored : 'level1');
   localStorage.setItem('shoreline_active_level', level);
   var s = document.createElement('script');
   s.type = 'module';
-  s.src = './src/main.js?v=103';
+  s.src = './src/main.js?v=104';
   document.body.appendChild(s);
 })();
 </script>
+</body>
+</html>

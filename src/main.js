@@ -1,20 +1,22 @@
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=103';
-import { WaterSim } from './water.js?v=103';
+} from './terrain.js?v=104';
+import { WaterSim } from './water.js?v=104';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=103';
-import { scatterRocks, Rock } from './rocks.js?v=103';
-import { Player } from './player.js?v=103';
-import { AudioSystem } from './audio.js?v=103';
-import { Particles } from './particles.js?v=103';
-import { Debris } from './debris.js?v=103';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=103';
-import { Bulldozer, Excavator } from './vehicles.js?v=103';
+} from './environment.js?v=104';
+import { scatterRocks, Rock } from './rocks.js?v=104';
+import { Player } from './player.js?v=104';
+import { AudioSystem } from './audio.js?v=104';
+import { Particles } from './particles.js?v=104';
+import { Debris } from './debris.js?v=104';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=104';
+import { buildHiddenDoor } from './hidden-door.js';
+import { buildMillValley } from './mill.js';
+import { Bulldozer, Excavator } from './vehicles.js?v=104';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -34,20 +36,20 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 103;
+const APP_VERSION = 104;
 
 // ---------- renderer / scene / camera ----------
 
 const app = document.getElementById('app');
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(3, window.devicePixelRatio || 1));
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 // Slightly down from 1.18 - the old exposure was washing out the richer, more
 // saturated palette below (everything read a bit bleached/flat regardless of
 // what colour was actually painted on it).
-renderer.toneMappingExposure = 1.06;
+renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 app.appendChild(renderer.domElement);
@@ -131,7 +133,7 @@ let ocean = null, cascade = null;
 if (ACTIVE_LEVEL_ID === 'level2') {
   cascade = buildWaterfallCascade(terrain);
   scene.add(cascade.mesh);
-} else {
+} else if (ACTIVE_LEVEL_ID === 'level1') {
   ocean = buildOcean(water.uniforms);
   scene.add(ocean.mesh);
 }
@@ -183,7 +185,8 @@ const rocks = savedData && Array.isArray(savedData.rocks)
 const player = new Player(terrain);
 scene.add(player.mesh);
 if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
-else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(SIZE * 0.5, SIZE * 0.30); // just below the falls' landing pool
+else if (ACTIVE_LEVEL_ID === 'level3') player.setSpawn(76, 60);
+else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(L2_LIP_X + 7, (L2_T_FALL1 + .045) * SIZE); // just below the falls' landing pool
 else player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
 
 const particles = new Particles(scene, 320);
@@ -226,9 +229,16 @@ if (savedData) {
 // were pinned to the PRE-erosion height, then the ground moved out from
 // under them during priming - "grass floating in the air" by the river.
 let villageDoor = null;
-if (ACTIVE_LEVEL_ID === 'level2') {
+let mill = null;
+let waterfallDoor = null;
+if (ACTIVE_LEVEL_ID === 'level3') {
+  mill = buildMillValley(terrain, water);
+  scene.add(mill.group);
+} else if (ACTIVE_LEVEL_ID === 'level2') {
   scene.add(buildSkirtLevel2(terrain));
   scene.add(scatterPropsLevel2(terrain));
+  waterfallDoor = buildHiddenDoor(terrain);
+  scene.add(waterfallDoor.group);
 } else {
   scene.add(buildSkirt(terrain));
   const village = buildVillage(terrain);
@@ -259,6 +269,7 @@ function createVehicle(type, x, z, heading, terrainRef) {
 // floor, not the coastal village - level 1 never calls this any more (see
 // the `vehicles` const below).
 function placeVehicles(terrainRef) {
+  if (ACTIVE_LEVEL_ID === 'level3') return [createVehicle('excavator', 64, 40, Math.PI, terrainRef), createVehicle('bulldozer', 47, 38, Math.PI, terrainRef)];
   const specs = [
     { type: 'bulldozer', heading: Math.PI * 0.12 },
     { type: 'excavator', heading: -Math.PI * 0.22 },
@@ -300,7 +311,7 @@ function placeVehicles(terrainRef) {
 
 // Construction equipment only belongs in the gorge (level 2) - a hand-shovel
 // coastal sandbox has no business with a bulldozer parked on the beach.
-const vehicles = ACTIVE_LEVEL_ID !== 'level2' ? [] : (
+const vehicles = ACTIVE_LEVEL_ID === 'level1' ? [] : (
   savedData && Array.isArray(savedData.vehicles) && savedData.vehicles.length
     ? savedData.vehicles.map((vd) => createVehicle(vd.type, vd.x, vd.z, vd.heading, terrain))
     : placeVehicles(terrain)
@@ -490,9 +501,9 @@ document.getElementById('zoomOutBtn').addEventListener('pointerdown', (e) => {
 
 // ---------- camera controller ----------
 
-const DEFAULT_DIST = 13.5;
-const INTRO_START_DIST = 190;
-const INTRO_DURATION = 5.2;
+const DEFAULT_DIST = ACTIVE_LEVEL_ID === 'level3' ? 64 : 38;
+const INTRO_START_DIST = 95;
+const INTRO_DURATION = 2.8;
 
 let camYaw = Math.PI;
 let camDistTarget = DEFAULT_DIST;
@@ -1001,7 +1012,7 @@ function updateShovel(dt) {
           // than the same stroke against harder ground.
           const removed = terrain.scoopDeform(target.x, target.z, dx, dz, DIG_LEN, DIG_WID, -STROKE_AMOUNT, 1.0);
           if (removed < -0.0005) {
-            terrain.scoopDeform(pileX, pileZ, dx, dz, PILE_LEN, PILE_WID, -removed, 0);
+            terrain.depositScoop(pileX, pileZ, dx, dz, PILE_LEN, PILE_WID, -removed);
           }
           terrain.markDirty();
 
@@ -1042,8 +1053,10 @@ const hints = {
   queue: [],
   current: null,
   timer: 0,
-  messages: ACTIVE_LEVEL_ID === 'level2' ? {
-    intro: 'A shovel. A waterfall feeding a river through the gorge. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
+  messages: ACTIVE_LEVEL_ID !== 'level1' ? {
+    nearVehicle: 'Walk to a machine and press E to drive. Hold the dig control to move earth.',
+    enterVehicle: 'W/S drive · A/D steer · E exit · Click to dig · Z/X rotate the excavator cab',
+    intro: ACTIVE_LEVEL_ID === 'level3' ? 'The old mill is starved of water. Clear the silted right fork upstream, then redirect the river to bring the garden fountain back to life.' : 'A shovel. A waterfall feeding a river through the gorge. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
     dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
     pickUp: 'Carry it to the water. E to set it down.',
     putDown: null,
@@ -1092,13 +1105,13 @@ const tideLabel = document.getElementById('tideLabel');
 let lastTideHeight = water.tideHeight(0);
 // Level 2 is a still mountain lake, not a tidal sea (see water.js's own
 // tideRange=0 for level 2) - the tide readout has nothing to show there.
-if (ACTIVE_LEVEL_ID === 'level2') {
+if (ACTIVE_LEVEL_ID !== 'level1') {
   const tideWrap = document.getElementById('tideWrap');
   if (tideWrap) tideWrap.style.display = 'none';
 }
 
 function updateTideUI() {
-  if (ACTIVE_LEVEL_ID === 'level2') return;
+  if (ACTIVE_LEVEL_ID !== 'level1') return;
   const h = water.tideHeight(water.elapsed);
   const norm = THREE.MathUtils.clamp((h - (water.tideLevel - water.tideRange / 2)) / water.tideRange, 0, 1);
   tideMarker.style.left = `${norm * 100}%`;
@@ -1161,13 +1174,14 @@ let doorPopupShown = false;
 let doorDismissed = false;
 
 function nearVillageDoor() {
-  if (!villageDoor || ACTIVE_LEVEL_ID !== 'level1') return false;
-  const dx = villageDoor.standX - player.pos.x, dz = villageDoor.standZ - player.pos.z;
+  const door = ACTIVE_LEVEL_ID === 'level2' ? waterfallDoor : villageDoor;
+  if (!door) return false;
+  const dx = door.standX - player.pos.x, dz = door.standZ - player.pos.z;
   return Math.hypot(dx, dz) < DOOR_RANGE;
 }
 
 function updateDoorUI() {
-  if (!villageDoor || ACTIVE_LEVEL_ID !== 'level1' || drivingVehicle) return;
+  if (ACTIVE_LEVEL_ID === 'level3' || drivingVehicle) return;
   const near = nearVillageDoor();
   if (near && !doorPopupShown && !doorDismissed) {
     doorPopupShown = true;
@@ -1178,13 +1192,20 @@ function updateDoorUI() {
 }
 
 if (doorPopupEl) {
+  if (ACTIVE_LEVEL_ID === 'level2') {
+    doorPopupEl.querySelector('.lsTitle').textContent = 'Behind the falling water';
+    doorPopupEl.querySelector('.lsSubtitle').textContent = 'An old door in the rock.';
+    doorPopupEl.querySelector('.lsCardTitle').textContent = 'Stillwater Mill';
+    doorPopupEl.querySelector('.lsCardDesc').textContent = 'Beyond the gorge, a divided river and a waterwheel waiting to turn.';
+  }
   const gorgeCard = document.getElementById('gorgeCard');
   const dismissBtn = document.getElementById('lsDismiss');
   if (gorgeCard) {
     gorgeCard.addEventListener('click', () => {
       saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID });
-      localStorage.setItem('shoreline_active_level', 'level2');
-      location.reload();
+      const next = ACTIVE_LEVEL_ID === 'level2' ? 'level3' : 'level2';
+      localStorage.setItem('shoreline_active_level', next);
+      location.href = location.pathname; // consume debug level override when travelling
     });
   }
   if (dismissBtn) {
@@ -1229,7 +1250,7 @@ window.addEventListener('pagehide', doSave);
 
 const resetBtn = document.getElementById('resetBtn');
 if (resetBtn) {
-  const resetLabel = ACTIVE_LEVEL_ID === 'level2' ? 'Reset gorge' : 'Reset beach';
+  const resetLabel = ACTIVE_LEVEL_ID === 'level3' ? 'Reset valley' : ACTIVE_LEVEL_ID === 'level2' ? 'Reset gorge' : 'Reset beach';
   resetBtn.textContent = resetLabel;
   resetBtn.addEventListener('click', () => {
     const sure = window.confirm('Reset this level back to its natural state? Everything you\'ve dug, piled, or moved will be lost - this can\'t be undone.');
@@ -1248,19 +1269,30 @@ const levelBtn = document.getElementById('levelBtn');
 if (levelBtn) {
   // Level 1 has no "change level" destination any more - the door is the only
   // way there. Only level 2 (reached through it) needs a way back.
-  if (ACTIVE_LEVEL_ID !== 'level2') levelBtn.style.display = 'none';
-  else levelBtn.textContent = 'Back to Mawgan Porth';
+  if (ACTIVE_LEVEL_ID === 'level1') levelBtn.style.display = 'none';
+  else levelBtn.textContent = ACTIVE_LEVEL_ID === 'level3' ? 'Back to the gorge' : 'Back to Mawgan Porth';
   levelBtn.addEventListener('click', () => {
     // Unlike reset, this keeps (rather than clears) the current level's save -
     // save explicitly first (bypassing the `resetting` guard, which only
     // exists to stop an in-flight autosave from undoing a deliberate clearSave)
     // then just forget which level is "active" so the next load defaults to level 1.
-    saveState({ terrain, water, rocks, player, levelId: ACTIVE_LEVEL_ID });
-    localStorage.removeItem('shoreline_active_level');
-    location.reload();
+    saveState({ terrain, water, rocks, player, vehicles, levelId: ACTIVE_LEVEL_ID });
+    localStorage.setItem('shoreline_active_level', ACTIVE_LEVEL_ID === 'level3' ? 'level2' : 'level1');
+    location.href = location.pathname;
   });
 }
 
+// Locations are discovered through doors, not a level-selection menu.
+const placeNames = {level1: 'Mawgan Porth', level2: 'Highfall Gorge', level3: 'Stillwater Mill'};
+document.getElementById('placeName').textContent = placeNames[ACTIVE_LEVEL_ID];
+document.getElementById('chapterLabel').textContent = 'SHORELINE / ' + ACTIVE_LEVEL_ID.replace('level', '0');
+const controls = document.getElementById('controlsDialog');
+document.getElementById('helpBtn').onclick = () => controls.showModal();
+document.getElementById('closeHelp').onclick = () => controls.close();
+document.getElementById('overviewBtn').onclick = () => {
+  camDistTarget = camDistTarget > 70 ? DEFAULT_DIST : 115;
+  introTimer = INTRO_DURATION;
+};
 // ---------- auto-update on a stale tab ----------
 
 // version.txt is a tiny static file bumped alongside every ?v=N cache-bust -
@@ -1326,6 +1358,7 @@ function stepFrame(dt, elapsedTime) {
   // rocks, each touching a small neighbourhood of cells.
   terrain.recomputeObstruction(rocks);
   water.update(dt, terrain);
+  if (mill) mill.update(dt);
   terrain.update(dt);
   particles.update(dt);
   debris.update(dt, elapsedTime);
@@ -1374,7 +1407,7 @@ function animate() {
 window.__game = {
   player, camera, terrain, water, rocks, scene, updateShovel, debris,
   renderer, hemi, sun, fill, // exposed for lighting/material debugging in the browser console
-  vehicles,
+  vehicles, mill,
   getDrivingVehicle: () => drivingVehicle,
   enterVehicleByIndex: (i) => { const v = vehicles[i]; if (v && !v.occupied) enterVehicle(v); return !!drivingVehicle; },
   exitVehicleNow: () => exitVehicle(),
@@ -1387,7 +1420,7 @@ window.__game = {
     touchDigHeld, touchSmoothHeld,
     drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
     vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
-    villageDoor, doorPopupShown,
+    villageDoor, waterfallDoor, doorPopupShown,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,
@@ -1415,3 +1448,4 @@ requestAnimationFrame(() => {
 });
 
 animate();
+if (['127.0.0.1','localhost'].includes(location.hostname) && new URLSearchParams(location.search).has('qa')) import('../tests/playtest.js');

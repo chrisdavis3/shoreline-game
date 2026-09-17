@@ -1,9 +1,9 @@
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
-  getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
+  getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1, L2_TOP_H,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=103';
+} from './terrain.js?v=104';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -69,6 +69,11 @@ export class WaterSim {
     // single concentrated source can feed at a different rate without
     // changing level 1's tuned number at all.
     this._sourceRate = 0.34;
+    if (getActiveLevel() === 'level3') {
+      this.tideLevel = 0.8;
+      this.tideRange = 0;
+      this._sourceRate = 0.10;
+    }
 
     // Level 2 ("Highfall Gorge"): no tide at all - a still mountain lake at
     // the valley's exit instead of the sea, reusing the exact same coastT/
@@ -133,6 +138,19 @@ export class WaterSim {
   // build it up from zero through a single fragile point source.
   _seedChannel(terrain) {
     this._seepProfile = [];
+    if (getActiveLevel() === 'level3') {
+      // The puzzle is powered exclusively by the upstream spring. No hidden
+      // downstream top-ups: damming/diverting must really change the wheel.
+      this._seepRows = 0;
+      for (let j = 0; j < N; j++) {
+        const cx = streamCenterX(j * CELL);
+        for (let i = 0; i < N; i++) {
+          const d = Math.abs(i * CELL - cx);
+          this.depth[idx(i, j)] = .24 * Math.exp(-d * d / 5);
+        }
+      }
+      return;
+    }
     // Level 2's diggable seep channel only starts BELOW the landing pool - the
     // falls' own near-vertical face isn't a channel, it's fed purely by the
     // concentrated source cells above (see _seedSource) and the flux sim
@@ -186,7 +204,7 @@ export class WaterSim {
         if (ellip >= 1) continue;
         const k = idx(i, j);
         if (terrain.blocked[k]) continue;
-        const target = (1 - ellip) * 1.6;
+        const target = Math.max(0, L2_TOP_H - .4 - terrain.height[k]);
         this.depth[k] = Math.max(this.depth[k], target);
       }
     }
@@ -221,6 +239,7 @@ export class WaterSim {
           const k = fidx(i, j);
           pos.setX(k, warpX(i * fineCell, z));
           pos.setY(k, 0); // fully overwritten in the vertex shader every frame
+          pos.setZ(k, z); // Same CELL spacing as terrain; PlaneGeometry used SIZE/(GRID-1).
           fieldUV[k * 2] = (i / RENDER_SS + 0.5) / N;
           fieldUV[k * 2 + 1] = v;
         }
@@ -282,8 +301,8 @@ export class WaterSim {
     this.uniforms = {
       uTime: { value: 0 },
       uTideLevel: { value: this.tideLevel },
-      uShallowColor: { value: new THREE.Color('#5cd0cc') },
-      uDeepColor: { value: new THREE.Color('#1b6f8c') },
+      uShallowColor: { value: new THREE.Color('#77a49a') },
+      uDeepColor: { value: new THREE.Color('#244f61') },
       uFoam: { value: new THREE.Color('#eef6f2') },
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
       uDepthFlowTex: { value: this._depthFlowTex },
@@ -324,6 +343,21 @@ export class WaterSim {
           return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
         }
 
+        float cubic(float a, float b, float c, float d, float t) {
+          return clamp(b + .5*t*(c-a+t*(2.*a-5.*b+4.*c-d+t*(3.*(b-c)+d-a))), min(b,c), max(b,c));
+        }
+        float bedAt(vec2 tc) {
+          return texture2D(uHeightTex, (clamp(tc, vec2(0.), vec2(${(N-1).toFixed(1)})) + .5) / ${N.toFixed(1)}).r;
+        }
+        float smoothBed(vec2 uv) {
+          vec2 p=uv*${N.toFixed(1)}-.5, i=floor(p), f=fract(p);
+          float rows[4];
+          for(int r=0;r<4;r++) {
+            vec2 q=i+vec2(0.,float(r)-1.);
+            rows[r]=cubic(bedAt(q+vec2(-1.,0.)),bedAt(q),bedAt(q+vec2(1.,0.)),bedAt(q+vec2(2.,0.)),f.x);
+          }
+          return cubic(rows[0],rows[1],rows[2],rows[3],f.y);
+        }
         void main() {
           // The coarse N x N sim fields (depth/flow/velocity/terrain height),
           // bilinear-sampled here instead of CPU-upsampled per vertex every
@@ -333,7 +367,7 @@ export class WaterSim {
           vDepth = aDepth;
           vFlow = depthFlow.g;
           vFlowDir = sampleBilinear(uVelTex, aFieldUV).rg;
-          float terrainH = sampleBilinear(uHeightTex, aFieldUV).r;
+          float terrainH = smoothBed(aFieldUV);
 
           vec3 pos = position;
           pos.y = terrainH + aDepth + 0.006;
@@ -448,32 +482,9 @@ export class WaterSim {
           // obvious within a couple of seconds rather than a slow crawl.
           float flowMag = length(vFlowDir);
           vec2 dir = flowMag > 0.02 ? vFlowDir / flowMag : vec2(0.0, 1.0);
-          float along = dot(vWorldPos.xz, dir);
-          float across = dot(vWorldPos.xz, vec2(-dir.y, dir.x));
-          float streakSpeed = 2.2 + min(flowMag, 3.0) * 3.2;
-          // A pure sin(along) gave perfectly even, parallel, barcode-spaced lines -
-          // real current lines break, merge, taper and vary in width, they never
-          // read as a clean repeating pattern. Warp the along-flow coordinate with
-          // noise before scrolling it (so lines aren't dead straight either), then
-          // build the streak itself from two independently-scaled, independently-
-          // drifting noise layers instead of a sine wave - thresholding noise gives
-          // organic blob/streak shapes with irregular length and spacing for free.
-          float warpN = valueNoise(vec2(along * 0.05, across * 0.08) + uTime * 0.045);
-          float alongWarped = along + (warpN - 0.5) * 5.0;
-          float streakA = valueNoise(vec2(alongWarped * 0.32, across * 0.46) - vec2(uTime * streakSpeed * 0.13, 0.0));
-          float streakB = valueNoise(vec2(alongWarped * 0.85 + 50.0, across * 1.2 + 50.0) - vec2(uTime * streakSpeed * 0.21, 0.0));
-          float streak = clamp(streakA * 0.6 + streakB * 0.55, 0.0, 1.0);
-          // The sim's flow-transfer scheme has real per-cell numerical noise in
-          // wide/still water (see water.js's own comments on checkerboard
-          // oscillation) - it was always there, just inaudible under the old,
-          // much less sensitive gating. Cranking sensitivity up to make the real
-          // river read as flowing also picked up that noise as a chaotic,
-          // flickering moiré everywhere the water is deep and slow (i.e. the open
-          // sea/tidal reach, not the actual river) - confirmed by look at exactly
-          // that depth range. Fading the whole effect out with depth keeps it
-          // where it means something (the shallow, coherently-flowing channel)
-          // and off where it was just amplifying static.
-          float depthFade = smoothstep(2.0, 0.25, vDepth);
+          vec2 advected = vWorldPos.xz * 0.65 - vFlowDir * uTime * 0.7;
+          float streak = valueNoise(advected) * 0.7 + valueNoise(advected * 2.1 + 17.0) * 0.3;
+          float depthFade = (1.0 - smoothstep(0.25, 2.0, vDepth));
           // Measured live in the actual channel (window.__game.water.flowSpeed
           // at the deepest/fastest part of a mid-river cell): flowMag there
           // typically sits around 0.2-0.3, not the 0.5+ this originally assumed -
@@ -481,11 +492,11 @@ export class WaterSim {
           // on the visibility curve instead of near its bottom.
           float flowVisibility = smoothstep(0.08, 0.4, flowMag) * depthFade;
           float streakVis = smoothstep(0.45, 0.85, streak) * smoothstep(0.01, 0.25, vDepth) * flowVisibility;
-          base = mix(base, uShallowColor * 1.3 + 0.06, streakVis * 0.65);
+          base = mix(base, uShallowColor * 1.3 + 0.06, streakVis * 0.18);
           // Caustics only read in shallow, clear water - fade out with depth and
           // under foam (broken, aerated water doesn't hold a sharp light pattern).
-          float causticVis = caustics(vWorldPos.xz, uTime) * smoothstep(0.9, 0.05, vDepth);
-          base += causticVis * 0.22;
+          float causticVis = caustics(vWorldPos.xz, uTime) * (1.0 - smoothstep(0.05, 0.9, vDepth));
+          base += causticVis * 0.035;
           // The real per-vertex normal used to come from THREE's computeVertexNormals
           // on the CPU - but position.y is now driven entirely by the vertex shader
           // (see RENDER_SS notes above), so the CPU-side geometry is flat and that
@@ -496,7 +507,7 @@ export class WaterSim {
           vec3 fdx = dFdx(vWorldPos), fdy = dFdy(vWorldPos);
           vec3 nrm = normalize(cross(fdx, fdy));
           if (nrm.y < 0.0) nrm = -nrm;
-          float fresnel = pow(1.0 - clamp(dot(nrm, vec3(0.0,1.0,0.0)), 0.0, 1.0), 3.0);
+          float fresnel = pow(1.0 - clamp(dot(nrm, normalize(cameraPosition - vWorldPos)), 0.0, 1.0), 3.0);
           vec3 sky = vec3(0.72, 0.80, 0.82);
           base = mix(base, sky, fresnel * 0.35);
           float diff = clamp(dot(nrm, uSunDir), 0.0, 1.0);
@@ -510,10 +521,10 @@ export class WaterSim {
           // thread with no relation to the real shoreline. Zero right at the
           // cutoff, ramping up over the next few cm and fading out by ~0.4m gives
           // a real, deliberate "just past the water's edge" foam line instead.
-          float foamEdge = smoothstep(0.01, 0.05, vDepth) * smoothstep(0.42, 0.05, vDepth);
+          float foamEdge = smoothstep(0.01, 0.05, vDepth) * (1.0 - smoothstep(0.05, 0.42, vDepth));
           float foamFlow = smoothstep(0.55, 1.4, vFlow) * smoothstep(0.02, 0.25, vDepth);
           float surfFoam = smoothstep(0.3, 0.85, vCrest) * smoothstep(0.02, 0.2, vDepth);
-          float foam = clamp(foamEdge * 0.9 + foamFlow * 0.6 + surfFoam * 0.9 + streakVis * 0.25, 0.0, 1.0);
+          float foam = clamp(foamEdge * 0.08 + foamFlow * 0.22 + surfFoam * 0.8 + streakVis * 0.06, 0.0, 1.0);
           // Break the foam up into a mottled, bubbly texture instead of a flat tint -
           // two noise octaves drifting at slightly different speeds so it looks like
           // it's actually churning, not a static painted-on band.
@@ -533,7 +544,7 @@ export class WaterSim {
           // makes the open-sea reach of this mesh read as solid water, matching
           // how the backdrop plane already reads, without touching the shallow
           // end's deliberate translucency at all (depthN is ~0 there).
-          float alpha = mix(0.32, 0.92, depthN);
+          float alpha = mix(0.48, 0.94, depthN);
           alpha = mix(alpha, 0.88, foam * 0.55);
           gl_FragColor = vec4(color, alpha);
         }
@@ -827,7 +838,7 @@ export class WaterSim {
     }
     for (let k = 0; k < N * N; k++) depth[k] += delta[k];
 
-    this._erode(dt, terrain);
+    this._erode(dt * (getActiveLevel() === 'level3' ? 0.015 : 1), terrain);
     terrain.markDirty();
   }
 

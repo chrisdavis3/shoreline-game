@@ -1,6 +1,6 @@
-import * as THREE from 'three';
-import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=103';
-import { Noise2D } from './noise.js?v=103';
+import * as THREE from '../vendor/three.module.js';
+import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=104';
+import { Noise2D } from './noise.js?v=104';
 
 const rn = new Noise2D(777);
 

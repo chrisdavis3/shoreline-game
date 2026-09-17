@@ -1,9 +1,9 @@
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=103';
-import { Noise2D } from './noise.js?v=103';
+} from './terrain.js?v=104';
+import { Noise2D } from './noise.js?v=104';
 
 const decoNoise = new Noise2D(555);
 
@@ -1024,6 +1024,7 @@ export function scatterPropsLevel2(terrain) {
   let tc = 0;
   for (let n = 0; n < TREE_COUNT * 3 && tc < TREE_COUNT; n++) {
     const x = Math.random() * SIZE, z = Math.random() * SIZE;
+    if (Math.abs(x - streamCenterX(z)) < 7 || (z < L2_T_FALL1 * SIZE && Math.abs(x - L2_LIP_X) < 20)) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     const eps = 0.7;
     const hx1 = terrain.sampleHeightBilinear(x + eps, z), hx0 = terrain.sampleHeightBilinear(x - eps, z);
@@ -1058,6 +1059,7 @@ export function scatterPropsLevel2(terrain) {
     const x = Math.random() * SIZE, z = Math.random() * SIZE;
     const density = decoNoise.fbm(x * 0.08 + 55, z * 0.08 + 55, 3);
     if (density < 0.1) continue;
+    if (Math.abs(x - streamCenterX(z)) < 7 || (z < L2_T_FALL1 * SIZE && Math.abs(x - L2_LIP_X) < 20)) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     const scale = 0.1 + Math.random() * 0.22;
     dummy.position.set(warpX(x, z), y + scale * 0.3, z);
@@ -1081,6 +1083,7 @@ export function scatterPropsLevel2(terrain) {
   while (lc < LOG_COUNT && attempts < LOG_COUNT * 20) {
     attempts++;
     const x = Math.random() * SIZE, z = SIZE * L2_T_FALL1 + Math.random() * SIZE * (1 - L2_T_FALL1) * 0.9;
+    if (Math.abs(x - streamCenterX(z)) < 7 || (z < L2_T_FALL1 * SIZE && Math.abs(x - L2_LIP_X) < 20)) continue;
     const y = terrain.sampleHeightBilinear(x, z);
     dummy.position.set(warpX(x, z), y + 0.1, z);
     dummy.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.3, 0, Math.random() * Math.PI);

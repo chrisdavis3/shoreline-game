@@ -1,5 +1,6 @@
-import * as THREE from 'three';
-import { Noise2D } from './noise.js?v=103';
+import * as THREE from '../vendor/three.module.js';
+import { Noise2D } from './noise.js?v=104';
+import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
 // Coordinate convention: world (x, z) in metres, x in [0, SIZE), z in [0, SIZE).
@@ -17,6 +18,7 @@ import { Noise2D } from './noise.js?v=103';
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
 export const TERRAIN_VERSION = 7;
+export const terrainVersionFor = level => level === 'level2' ? 9 : TERRAIN_VERSION;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
 export const SIZE = GRID * CELL;  // world size (metres)
@@ -36,7 +38,7 @@ function idx(i, j) { return j * GRID + i; }
 // rather than forking the engine. Callers (main.js) must call setActiveLevel()
 // BEFORE constructing Terrain/WaterSim - both read this synchronously at
 // construction time, there's no live-switching mid-session.
-export const LEVEL_IDS = ['level1', 'level2'];
+export const LEVEL_IDS = ['level1', 'level2', 'level3'];
 let ACTIVE_LEVEL = 'level1';
 export function setActiveLevel(id) { ACTIVE_LEVEL = LEVEL_IDS.includes(id) ? id : 'level1'; }
 export function getActiveLevel() { return ACTIVE_LEVEL; }
@@ -82,9 +84,9 @@ function streamCenterXLevel1(z) {
 // rather than branching level 1's own (heavily-tuned, Mawgan-Porth-specific)
 // formulas - see setActiveLevel above.
 export const L2_LIP_X = SIZE * 0.46;      // waterfall lip, world x (metres)
-export const L2_T_FALL0 = 0.17;           // t where the near-vertical drop begins
-export const L2_T_FALL1 = 0.28;           // t where it lands in the base pool
-export const L2_TOP_H = 52;               // mountainside height above the falls
+export const L2_T_FALL0 = 0.27;           // t where the near-vertical drop begins
+export const L2_T_FALL1 = 0.38;           // t where it lands in the base pool
+export const L2_TOP_H = 28;               // mountainside height above the falls
 export const L2_POOL_H = 7;               // landing-pool floor height
 export const L2_LAKE_H = 1.3;             // still lake level at the valley's exit
 export const L2_WALL_HEIGHT = 55;         // added valley-wall rise above the floor
@@ -97,7 +99,7 @@ export const L2_WALL_HEIGHT = 55;         // added valley-wall rise above the fl
 // sim should send water there too, no separate mechanic needed.
 export const L2_LAKE_CENTER_Z = L2_T_FALL0 * SIZE * 0.42;
 export const L2_LAKE_RADIUS_Z = L2_T_FALL0 * SIZE * 0.36;
-export const L2_LAKE_RADIUS_X = 15;
+export const L2_LAKE_RADIUS_X = 18;
 export const L2_LAKE_DEPTH = 4;
 
 function streamCenterXLevel2(z) {
@@ -114,6 +116,7 @@ function streamCenterXLevel2(z) {
 }
 
 function streamCenterX(z) {
+  if (ACTIVE_LEVEL === 'level3') return z < 30 ? 56 + Math.sin(z * .11) * .6 : bypassX(z);
   return ACTIVE_LEVEL === 'level2' ? streamCenterXLevel2(z) : streamCenterXLevel1(z);
 }
 
@@ -172,6 +175,7 @@ function coastTContinuousLevel1(ci) {
 }
 
 export function coastT(i) {
+  if (ACTIVE_LEVEL === 'level3') return 0.96;
   const ci = Math.round(THREE.MathUtils.clamp(i, 0, GRID - 1));
   return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(ci) : coastTContinuousLevel1(ci);
 }
@@ -180,6 +184,7 @@ export function coastT(i) {
 // (fine render-mesh spacing, e.g. insetCells() below) - coastT() itself rounds
 // since most callers index one specific simulation column.
 function coastTSmooth(i) {
+  if (ACTIVE_LEVEL === 'level3') return 0.96;
   const c = THREE.MathUtils.clamp(i, 0, GRID - 1);
   return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(c) : coastTContinuousLevel1(c);
 }
@@ -237,7 +242,7 @@ export function insetCells(i, t) {
   // straight edges right out to the map boundary (the walls themselves already
   // supply all the shape), not level 1's coastline-tracing taper. Returning 0
   // here makes warpX() below a no-op automatically (see its own early-out).
-  if (ACTIVE_LEVEL === 'level2') return 0;
+  if (ACTIVE_LEVEL !== 'level1') return 0;
   const ct = coastTSmooth(i);
   // 0 = a narrow rocky point (real coastline already close to the dune line),
   // 1 = a wide sandy apron in front of this column.
@@ -485,7 +490,15 @@ export class Terrain {
   }
 
   _generate() {
-    if (ACTIVE_LEVEL === 'level2') this._generateLevel2();
+    if (ACTIVE_LEVEL === 'level3') {
+      for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) {
+        const k = idx(i, j);
+        this.bedrock[k] = millHeight(i * CELL, j * CELL);
+        this.hardness[k] = 0.38;
+      }
+      this.height.set(this.bedrock);
+    }
+    else if (ACTIVE_LEVEL === 'level2') this._generateLevel2();
     else this._generateLevel1();
   }
 
@@ -931,7 +944,7 @@ export class Terrain {
           // above the pool could suddenly fall partway back onto centreH
           // just below it - a sharp local cliff right at the pool, confirmed
           // live. Transitions smoothly across the boundary instead.
-          const sideBlendWidth = THREE.MathUtils.lerp(9, 20, THREE.MathUtils.smoothstep(t, L2_T_FALL1 - 0.02, L2_T_FALL1 + 0.05));
+          const sideBlendWidth = THREE.MathUtils.lerp(28, 36, THREE.MathUtils.smoothstep(t, L2_T_FALL1 - 0.02, L2_T_FALL1 + 0.05));
           const sideBlend = THREE.MathUtils.clamp((distCells - 6) / sideBlendWidth, 0, 1);
           floorH = THREE.MathUtils.lerp(centerH, sideRampH, sideBlend);
         }
@@ -1018,6 +1031,14 @@ export class Terrain {
           ((x - L2_LIP_X) / L2_LAKE_RADIUS_X) ** 2 + ((z - L2_LAKE_CENTER_Z) / L2_LAKE_RADIUS_Z) ** 2
         );
         if (lakeEllipse < 1) h -= (1 - lakeEllipse) * L2_LAKE_DEPTH;
+
+        // A lake needs an outlet below its water surface. Previously the bowl
+        // stopped short of the lip, leaving a dry sill across the waterfall.
+        if (z >= L2_LAKE_CENTER_Z && t <= L2_T_FALL0 + .015) {
+          const outlet = L2_TOP_H - .8 - (z - L2_LAKE_CENTER_Z) * .025;
+          const w = Math.exp(-Math.pow((x - L2_LIP_X) / 2.3, 4));
+          h = THREE.MathUtils.lerp(h, Math.min(h, outlet), w);
+        }
 
         this.bedrock[idx(i, j)] = h;
 
@@ -1163,7 +1184,14 @@ export class Terrain {
   // colour - this plus the sharpened geometry above is what makes a scoop read as
   // an actual hole rather than a colour smudge.
   _colorAt(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
-    if (ACTIVE_LEVEL === 'level2') this._colorAtLevel2(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
+    if (ACTIVE_LEVEL === 'level3') {
+      const x = fi * FINE_CELL, z = fj * FINE_CELL;
+      const patch = n1.fbm(x * .19, z * .19, 3) * .5 + .5;
+      out.copy(this._pal.grass).lerp(this._pal.grassWarm, patch * .42);
+      out.lerp(this._pal.dirtLight, Math.min(.85, slope * .7 + wet * .55 + disturbance * .8));
+      out.multiplyScalar(.88 + patch * .2);
+    }
+    else if (ACTIVE_LEVEL === 'level2') this._colorAtLevel2(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
     else this._colorAtLevel1(fi, fj, h, slope, hardness, wet, disturbance, cavity, out);
   }
 
@@ -1478,6 +1506,29 @@ export class Terrain {
     }
     this._markFineDirty(i0, i1, j0, j1);
     return moved;
+  }
+
+  // Raises a ring of terrain between innerR and outerR - used for the spoil heap
+  // Deposit an exact quantity returned by scoopDeform. Its `delta` argument
+  // is a peak height, not a quantity: feeding removed soil back into it
+  // multiplied the earth by the destination footprint's summed weights.
+  depositScoop(x, z, dirX, dirZ, lenR, widR, amount) {
+    const len = Math.hypot(dirX, dirZ) || 1;
+    const ux = dirX / len, uz = dirZ / len, r = Math.max(lenR, widR);
+    const cells = []; let total = 0;
+    for (let j = Math.max(0, Math.floor((z-r)/CELL)); j <= Math.min(GRID-1, Math.ceil((z+r)/CELL)); j++) {
+      for (let i = Math.max(0, Math.floor((x-r)/CELL)); i <= Math.min(GRID-1, Math.ceil((x+r)/CELL)); i++) {
+        const k = idx(i,j); if (this.blocked[k]) continue;
+        const dx=i*CELL-x, dz=j*CELL-z;
+        const d=Math.hypot((dx*ux+dz*uz)/lenR,(-dx*uz+dz*ux)/widR);
+        if(d>=1)continue;
+        const w=(1-d)**2;cells.push([k,w]);total+=w;
+      }
+    }
+    if(!total)return 0;
+    for(const [k,w] of cells) { const dh=amount*w/total;this.height[k]+=dh;this.disturbance[k]=Math.min(1,this.disturbance[k]+dh*6); }
+    this._markFineDirty(Math.max(0,Math.floor((x-r)/CELL)),Math.min(GRID-1,Math.ceil((x+r)/CELL)),Math.max(0,Math.floor((z-r)/CELL)),Math.min(GRID-1,Math.ceil((z+r)/CELL)));
+    return amount;
   }
 
   // Raises a ring of terrain between innerR and outerR - used for the spoil heap

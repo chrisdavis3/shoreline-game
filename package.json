@@ -1,0 +1,7 @@
+{
+  "name": "shoreline",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node tests/mill.test.js" },
+  "dependencies": { "three": "0.160.0" }
+}

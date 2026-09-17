@@ -4,7 +4,7 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
-import { TERRAIN_VERSION } from './terrain.js?v=103';
+import { terrainVersionFor } from './terrain.js?v=104';
 
 // Each level gets its own independent save slot, keyed by level id, so
 // progress in one never overwrites or gets clobbered by the other. Level 1's
@@ -14,6 +14,7 @@ import { TERRAIN_VERSION } from './terrain.js?v=103';
 const KEY_BY_LEVEL = {
   level1: 'shoreline_save_v1',
   level2: 'shoreline_save_level2_v1',
+  level3: 'shoreline_save_level3_v1',
 };
 function keyFor(levelId) { return KEY_BY_LEVEL[levelId] || KEY_BY_LEVEL.level1; }
 const SCHEMA_VERSION = 1;
@@ -39,7 +40,7 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
   try {
     const data = {
       v: SCHEMA_VERSION,
-      terrainV: TERRAIN_VERSION,
+      terrainV: terrainVersionFor(levelId),
       savedAt: Date.now(),
       height: f32ToBase64(terrain.height),
       hardness: f32ToBase64(terrain.hardness),
@@ -48,6 +49,7 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
       tideLevel: water.tideLevel,
       tidePhase: water.tidePhase,
       elapsed: water.elapsed,
+      millProgress: water.millProgress || 0,
       // Carried rocks are saved at their last grounded position/state, not as
       // "still being held" - restoring mid-carry state (which arm, reach, etc.)
       // isn't worth the fragility for what's a rare edge case to be mid-reload.
@@ -84,7 +86,13 @@ export function loadSavedData(levelId = 'level1') {
     // discard old saves for that level rather than risk that mismatch;
     // saves missing terrainV entirely predate this check and are treated
     // the same as a mismatch (discarded), not assumed compatible.
-    if (data.terrainV !== TERRAIN_VERSION) return null;
+    if (data.terrainV !== terrainVersionFor(levelId)) {
+      // Preserve the original earthworks before a changed landscape starts a
+      // fresh save. A later autosave must never erase the only old copy.
+      const backup = keyFor(levelId) + '_terrain_' + data.terrainV + '_backup';
+      if (!localStorage.getItem(backup)) localStorage.setItem(backup, raw);
+      return null;
+    }
     return data;
   } catch (e) {
     console.warn('[shoreline] saved data unreadable, ignoring it:', e);
@@ -107,4 +115,5 @@ export function applySavedData(data, terrain, water) {
   water.tideLevel = data.tideLevel;
   water.tidePhase = data.tidePhase;
   water.elapsed = data.elapsed;
+  water.millProgress = data.millProgress || 0;
 }

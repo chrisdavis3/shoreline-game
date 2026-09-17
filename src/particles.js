@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../vendor/three.module.js';
 
 // A small fixed-size particle pool for sand dust and water splashes.
 // Kept deliberately simple: CPU-updated positions written into a Points buffer.

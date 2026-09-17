@@ -1,5 +1,5 @@
-import * as THREE from 'three';
-import { SIZE, warpX } from './terrain.js?v=103';
+import * as THREE from '../vendor/three.module.js';
+import { SIZE, warpX } from './terrain.js?v=104';
 
 // Drivable construction vehicles: a bulldozer (blade grading) and an excavator
 // (fixed-reach bucket digging, independently-rotating cab). Deliberately
@@ -395,7 +395,7 @@ export class Bulldozer {
       if (!this.bladeDown && this._bladeLoad > 0.0004) {
         const fwd = this.base.worldForward();
         const bx = this.base.pos.x + fwd.x * this.bladeOffset, bz = this.base.pos.z + fwd.z * this.bladeOffset;
-        terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen * 1.2, this.bladeWidth, this._bladeLoad, 0);
+        terrain.depositScoop(bx, bz, fwd.x, fwd.z, this.bladeLen * 1.2, this.bladeWidth, this._bladeLoad);
         terrain.markDirty();
         this._bladeLoad = 0;
       }
@@ -439,11 +439,11 @@ export class Bulldozer {
       const shed = removed - carry;
       const pileDist = this.bladeOffset + this.bladeLen * 0.95;
       const px = this.base.pos.x + fwd.x * pileDist, pz = this.base.pos.z + fwd.z * pileDist;
-      terrain.scoopDeform(px, pz, fwd.x, fwd.z, this.bladeLen * 1.3, this.bladeWidth * 1.1, shed * 0.5, 0);
+      terrain.depositScoop(px, pz, fwd.x, fwd.z, this.bladeLen * 1.3, this.bladeWidth * 1.1, shed * 0.5);
       const sideX = -fwd.z, sideZ = fwd.x;
       for (const side of [-1, 1]) {
         const spx = bx + sideX * side * this.bladeWidth * 0.95, spz = bz + sideZ * side * this.bladeWidth * 0.95;
-        terrain.scoopDeform(spx, spz, fwd.x, fwd.z, this.bladeLen * 0.9, this.bladeWidth * 0.6, shed * 0.25, 0);
+        terrain.depositScoop(spx, spz, fwd.x, fwd.z, this.bladeLen * 0.9, this.bladeWidth * 0.6, shed * 0.25);
       }
       terrain.markDirty();
       return { x: bx, y: groundHere, z: bz, amount: cut };
@@ -456,7 +456,7 @@ export class Bulldozer {
       // with the blade down grade a smooth ramp rather than only ever cut.
       const fill = Math.min(-diff, DOZER_CUT_RATE * tick, this._bladeLoad);
       this._bladeLoad -= fill;
-      terrain.scoopDeform(bx, bz, fwd.x, fwd.z, this.bladeLen, this.bladeWidth, fill, 0);
+      terrain.depositScoop(bx, bz, fwd.x, fwd.z, this.bladeLen, this.bladeWidth, fill);
       terrain.markDirty();
       return { x: bx, y: groundHere, z: bz, amount: fill };
     }
@@ -615,7 +615,7 @@ export class Excavator {
     const dumpFacing = this.cabFacing + EXC_DUMP_SWING;
     const fx = Math.sin(dumpFacing), fz = Math.cos(dumpFacing);
     const dx = this.base.pos.x + fx * EXC_DUMP_REACH, dz = this.base.pos.z + fz * EXC_DUMP_REACH;
-    terrain.scoopDeform(dx, dz, fx, fz, EXC_DIG_LEN * 1.15, EXC_DIG_WID * 1.25, this._pendingSpoil, 0);
+    terrain.depositScoop(dx, dz, fx, fz, EXC_DIG_LEN * 1.15, EXC_DIG_WID * 1.25, this._pendingSpoil);
     terrain.markDirty();
     const y = terrain.sampleHeightBilinear(dx, dz);
     const spoil = this._pendingSpoil;
