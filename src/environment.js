@@ -1,11 +1,11 @@
-import { CAVE_WATER } from './hidden-cave.js?v=109';
-import { buildCoastalVillage } from './village.js?v=109';
+import { CAVE_WATER } from './hidden-cave.js?v=110';
+import { buildCoastalVillage } from './village.js?v=110';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=109';
-import { Noise2D } from './noise.js?v=109';
+} from './terrain.js?v=110';
+import { Noise2D } from './noise.js?v=110';
 
 const decoNoise = new Noise2D(555);
 

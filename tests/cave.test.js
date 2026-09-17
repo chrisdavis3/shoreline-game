@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import * as THREE from '../vendor/three.module.js';
-import {Terrain,setActiveLevel,SIZE} from '../src/terrain.js?v=109';
-import {Player} from '../src/player.js?v=109';
-import {buildHiddenCave,CAVE_X,CAVE_BACK,CAVE_MOUTH,CAVE_WATER,reachedCavePassage} from '../src/hidden-cave.js?v=109';
+import {Terrain,setActiveLevel,SIZE} from '../src/terrain.js?v=110';
+import {Player} from '../src/player.js?v=110';
+import {buildHiddenCave,CAVE_X,CAVE_BACK,CAVE_MOUTH,CAVE_WATER,reachedCavePassage} from '../src/hidden-cave.js?v=110';
 setActiveLevel('level2');
 const terrain=new Terrain(),cave=buildHiddenCave(terrain),player=new Player(terrain);
 player.walkHeight=cave.walkHeight;player.setSpawn(CAVE_X,CAVE_WATER+1);

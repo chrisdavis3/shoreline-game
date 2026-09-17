@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { Noise2D } from './noise.js?v=109';
+import { Noise2D } from './noise.js?v=110';
 import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
@@ -1695,9 +1695,11 @@ export class Terrain {
     // without ever re-touching the whole ~310K-vertex mesh in one frame (measured
     // to be the expensive case - see the deployment notes for actual numbers).
     const scanJ0 = this._scanRow;
-    const scanJ1 = Math.min(GRID - 1, scanJ0 + FINE_SCAN_ROWS_PER_FRAME - 1);
+    const scanJ1 = Math.min(GRID - 1, scanJ0 + FINE_SCAN_ROWS_PER_FRAME);
     this._flushFineRegion({ i0: 0, i1: GRID - 1, j0: scanJ0, j1: scanJ1 });
-    this._scanRow = scanJ1 >= GRID - 1 ? 0 : scanJ1 + 1;
+    // Regions include both endpoints. Share the last coarse row with the next
+    // strip, otherwise the fine vertices BETWEEN row 1 and row 2 never refresh.
+    this._scanRow = scanJ1 >= GRID - 1 ? 0 : scanJ1;
 
     // Freshly turned sand slowly weathers back to its normal colour over roughly
     // a minute - long enough that a dig session reads clearly, short enough that

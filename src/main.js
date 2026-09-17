@@ -2,21 +2,21 @@ import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=109';
-import { WaterSim } from './water.js?v=109';
+} from './terrain.js?v=110';
+import { WaterSim } from './water.js?v=110';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=109';
-import { scatterRocks, Rock } from './rocks.js?v=109';
-import { Player } from './player.js?v=109';
-import { AudioSystem } from './audio.js?v=109';
-import { Particles } from './particles.js?v=109';
-import { Debris } from './debris.js?v=109';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=109';
-import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=109';
+} from './environment.js?v=110';
+import { scatterRocks, Rock } from './rocks.js?v=110';
+import { Player } from './player.js?v=110';
+import { AudioSystem } from './audio.js?v=110';
+import { Particles } from './particles.js?v=110';
+import { Debris } from './debris.js?v=110';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=110';
+import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=110';
 import { buildMillValley } from './mill.js';
-import { Bulldozer, Excavator } from './vehicles.js?v=109';
+import { Bulldozer, Excavator } from './vehicles.js?v=110';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -36,7 +36,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 109;
+const APP_VERSION = 110;
 
 // ---------- renderer / scene / camera ----------
 

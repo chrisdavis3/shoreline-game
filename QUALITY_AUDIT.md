@@ -43,7 +43,7 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 ## Open priorities
 
 1. Beach scenery: cottages now have architectural detail, but their arrangement needs lanes, gardens and a better relationship to the actual village; background cliff polygons remain conspicuous. The landscape still lacks the real place's architectural and geological detail. Improve based on actual references and compare broad views, not just the player's immediate surroundings.
-2. Banks: coarse stepping and residual geometric water/terrain intersections are visible despite the alignment and shading improvements. Isolate rendered height interpolation versus actual bed shape before changing the solver.
+2. Banks: the regular comb pattern is fixed in release 110. Continue checking bank shapes and water intersections under player digging and long erosion runs; the source channel is still too uniform.
 3. River decoration: some static grass/pebbles end up in the active stream. Re-anchor or suppress them as the bank erodes; do not hide movable gameplay rocks.
 4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the concealed cave. The core mill test does not cover this level.
 5. Mill composition: improve the view of the wheel, river fork and fountain together, particularly in portrait. Existing trees and stonework are still visibly stylised. Garden-complete text should distinguish historical completion from a currently stopped pump.
@@ -61,3 +61,11 @@ Removed the wooden door entirely. The gorge now has a sheltered rock passage wit
 Local browser verification: exterior waterfall conceals the opening; inside view has no door; continuous player-update steps entered Stillwater Mill. Gorge save is written outside the cave for the return trip. Cave floor clears the current saved terrain; the water surface is masked inside the shelter, without altering flow simulation. The cave remains stylised rock geometry and needs further material detailing.
 
 Release 109 follow-up: unload autosave keeps the return position outside the cave. Browser confirmed returning from Stillwater Mill stays in Highfall Gorge.
+
+## Release 110: stale terrain strips
+
+- Found the principal cause of the regular bank/water comb: the incremental fine-mesh refresh covered coarse rows 0..1 then 2..3, skipping fine vertices between rows 1 and 2. Erosion changed the physical bed but these strips stayed at old heights. Scan strips now share endpoints. No simulation, terrain-generation or save-format changes.
+- Regression test raises the coarse bed, runs incremental refresh, and compares every rendered height against a full refresh. Original code fails with 115,299 stale vertices and 0.25m height error. Corrected code passes with zero stale vertices.
+- Before/after screenshots from the same saved beach near z=30 show the regular transverse ridges removed during running simulation. Phone viewport 390x844 with touch layout also shows continuous banks; no script/shader errors logged. This is layout testing, not hardware performance validation.
+- Eight-minute untouched mill and excavated diversion test passed: discharge 0.03642, wheel 5.10 rpm after diversion; finite water, conserved earth and stagnant-water checks pass.
+- Investigated interpolation of water elevation; reverted that experiment after it did not remove the ridges. Only the terrain scan correction is included.

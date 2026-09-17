@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/mill.test.js && node tests/village.test.js && node tests/cave.test.js"
+    "test": "node tests/mill.test.js && node tests/village.test.js && node tests/cave.test.js && node tests/terrain-refresh.test.js"
   },
   "dependencies": {
     "three": "0.160.0"
