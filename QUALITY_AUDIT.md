@@ -8,7 +8,7 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 - Visible water flow and clean banks, no checkerboard, teeth, perforation lines or evolving swirl artefacts.
 - Digging transfers visible scoops of earth; machines move material rather than creating it.
 - Highfall's upper lake must feed the waterfall and connect to accessible ground on either side.
-- Hidden progression only: village door to the gorge, door behind the waterfall to the mill. No public location picker.
+- Hidden progression only: village door to the gorge, then a cave concealed behind the waterfall to the mill. No door at the waterfall; walk through the water into the cave. No public location picker.
 - The mill responds to actual river flow; the player redirects it to run the pump and fountain. Standing water must not power the wheel.
 - Save progress independently per level; preserve a backup before incompatible terrain saves are replaced.
 - Test the game ourselves, including phone layouts. Deploy verified improvements only.
@@ -45,7 +45,7 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 1. Beach scenery: cottages now have architectural detail, but their arrangement needs lanes, gardens and a better relationship to the actual village; background cliff polygons remain conspicuous. The landscape still lacks the real place's architectural and geological detail. Improve based on actual references and compare broad views, not just the player's immediate surroundings.
 2. Banks: coarse stepping and residual geometric water/terrain intersections are visible despite the alignment and shading improvements. Isolate rendered height interpolation versus actual bed shape before changing the solver.
 3. River decoration: some static grass/pebbles end up in the active stream. Re-anchor or suppress them as the bank erodes; do not hide movable gameplay rocks.
-4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the hidden door. The core mill test does not cover this level.
+4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the concealed cave. The core mill test does not cover this level.
 5. Mill composition: improve the view of the wheel, river fork and fountain together, particularly in portrait. Existing trees and stonework are still visibly stylised. Garden-complete text should distinguish historical completion from a currently stopped pump.
 6. Full physical playthrough: drive both machines and solve using player controls, check spoil placement around blocked/boundary cells, and test saving mid-action. The automated diversion uses the terrain API, not a vehicle-control replay.
 7. Real mobile hardware performance/input, audio behaviour and extended natural tide cycles remain unverified. Do not present desktop emulation as an iPhone pass.
@@ -59,3 +59,5 @@ Fetch origin/main and inspect changes first. The local branch is master; Pages p
 Removed the wooden door entirely. The gorge now has a sheltered rock passage with a walkable floor behind a wider, dense waterfall curtain. Camera moves into the shelter after the player crosses the water. Walking into the back of the cave enters level 3 directly; there is no proximity popup outside the waterfall. Save format and simulation terrain remain unchanged. Automated player movement checks crossing and passage arrival, and rejects exterior/side trigger positions. Local visual and transition checks use explicit QA approach positioning, not a full gorge traversal.
 
 Local browser verification: exterior waterfall conceals the opening; inside view has no door; continuous player-update steps entered Stillwater Mill. Gorge save is written outside the cave for the return trip. Cave floor clears the current saved terrain; the water surface is masked inside the shelter, without altering flow simulation. The cave remains stylised rock geometry and needs further material detailing.
+
+Release 109 follow-up: unload autosave keeps the return position outside the cave. Browser confirmed returning from Stillwater Mill stays in Highfall Gorge.
