@@ -22,6 +22,10 @@ button('Advance river 30 seconds',()=>{
  g.terrain.refreshFineMeshFully();g.water._syncMeshAttrs(g.terrain);g.stepFrame(1/30);
 });
 button('Frame mill court',()=>{window.__game.player.setSpawn(78,65);window.__game.setZoom(80);});
+button('Frame village',()=>{
+ const g=window.__game,d=g.debug().villageDoor;
+ if(d){g.player.setSpawn(d.standX+5,d.standZ+5);g.player.facing=Math.PI;g.setZoom(30);}
+});
 button('Show touch layout',()=>document.body.classList.toggle('touch'));
 button('Hide test tools',()=>bar.remove());
 document.body.append(bar);

@@ -1,9 +1,10 @@
+import { buildCoastalVillage } from './village.js?v=107';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=106';
-import { Noise2D } from './noise.js?v=106';
+} from './terrain.js?v=107';
+import { Noise2D } from './noise.js?v=107';
 
 const decoNoise = new Noise2D(555);
 
@@ -738,119 +739,10 @@ export function buildSkirt(terrain) {
   return mesh;
 }
 
-// Every single reference photo/map of the real place shows a village sitting
-// right on the clifftop above the beach (Mawgan Porth itself, plus Bedruthan
-// Hotel and Scarlet Hotel further along) - the game had precisely zero trace
-// of it, which reads as an obviously empty, wrong landscape next to any real
-// photo no matter how good the sand/cliffs/water get. Placed on the dune band
-// just inland of the beach (t < 0.20, where terrain.js's own cliffOnset is
-// still zero everywhere - guaranteed flat, headland-free ground across the
-// whole width) on the side AWAY from the stream, matching the real map (the
-// village and hotels sit on the opposite side of the bay from the tidal
-// creek). Simple low-poly box-plus-pitched-roof houses, not an attempt at
-// real architecture - the point is that a cluster of rooflines exists at all
-// where the real photos show one, not that any single building is detailed.
+// Coastal houses are kept in a separate, deterministic scenery builder.
+// The returned door remains the existing discovery route into the gorge.
 export function buildVillage(terrain) {
-  const group = new THREE.Group();
-  const wallTones = ['#e8ddc8', '#d9cdb3', '#c9c2ab', '#e2d4bc', '#cfd0c4'];
-  const roofTones = ['#5c4a3d', '#4a4640', '#6b4f3a', '#54524a'];
-  const wallMats = wallTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
-  const roofMats = roofTones.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75, flatShading: true }));
-  const doorMat = new THREE.MeshStandardMaterial({ color: '#7a3b2e', roughness: 0.7 });
-  const frameMat = new THREE.MeshStandardMaterial({ color: '#f2ede0', roughness: 0.8 });
-
-  // The very first house placed becomes the "gorge door" building - the sole
-  // entry point to level 2 (see main.js's door-proximity prompt). Gets a real
-  // door mesh + a lighter frame around it so it visibly stands out from every
-  // other house in the village, plus its world-space door position/facing
-  // handed back to main.js for the interaction check.
-  let doorInfo = null;
-
-  const TARGET = 26;
-  let placed = 0, attempts = 0;
-  while (placed < TARGET && attempts < TARGET * 40) {
-    attempts++;
-    const x = SIZE * 0.06 + Math.random() * SIZE * 0.58; // west/centre band, away from the stream
-    const z = 2 + Math.random() * 17; // the dune band - flat, headland-free at every x
-    const distFromStream = Math.abs(x - streamCenterX(z));
-    if (distFromStream < 14) continue; // keep clear of the stream's own corridor
-    if (terrain.blocked[idx(Math.round(x / CELL), Math.round(z / CELL))]) continue;
-
-    // Crude local slope check (a house needs a foundation, not a hillside) -
-    // sample height at the corners of the footprint and reject anything too
-    // uneven rather than let a house visibly float or clip into the ground.
-    const w = 2.4 + Math.random() * 2.2, d = 2.2 + Math.random() * 2.0;
-    const hC = terrain.sampleHeightBilinear(x, z);
-    const hL = terrain.sampleHeightBilinear(x - w / 2, z);
-    const hR = terrain.sampleHeightBilinear(x + w / 2, z);
-    const hF = terrain.sampleHeightBilinear(x, z - d / 2);
-    const hB = terrain.sampleHeightBilinear(x, z + d / 2);
-    const spread = Math.max(hL, hR, hF, hB, hC) - Math.min(hL, hR, hF, hB, hC);
-    if (spread > 0.9) continue;
-
-    // Avoid stacking two houses too close together.
-    let tooClose = false;
-    for (const h of group.children) {
-      if (Math.hypot(h.position.x - x, h.position.z - z) < 3.2) { tooClose = true; break; }
-    }
-    if (tooClose) continue;
-
-    const houseH = 2.1 + Math.random() * 1.1;
-    const wallMat = wallMats[Math.floor(Math.random() * wallMats.length)];
-    const roofMat = roofMats[Math.floor(Math.random() * roofMats.length)];
-    const house = new THREE.Group();
-
-    const wallGeo = new THREE.BoxGeometry(w, houseH, d);
-    const walls = new THREE.Mesh(wallGeo, wallMat);
-    walls.position.y = houseH / 2;
-    walls.castShadow = true;
-    walls.receiveShadow = true;
-    house.add(walls);
-
-    // A 3-segment cylinder is a triangular prism - laid on its side (rotated
-    // onto the z axis) it's exactly a pitched gable roof, no custom geometry
-    // needed. The default 3-segment cylinder has a flat face down already
-    // apex-up, so no extra roll is needed once it's rotated onto its side.
-    const roofLen = Math.max(w, d) * 1.12;
-    const roofGeo = new THREE.CylinderGeometry(Math.min(w, d) * 0.62, Math.min(w, d) * 0.62, roofLen, 3);
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.rotation.z = Math.PI / 2;
-    if (d > w) roof.rotation.y = Math.PI / 2;
-    roof.position.y = houseH + Math.min(w, d) * 0.3;
-    roof.castShadow = true;
-    house.add(roof);
-
-    const isDoorHouse = placed === 0;
-    if (isDoorHouse) {
-      const doorW = Math.min(w, 1.1), doorH = Math.min(houseH * 0.82, 1.9);
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.26, doorH + 0.22, 0.1), frameMat);
-      frame.position.set(0, doorH / 2, d / 2 + 0.02);
-      house.add(frame);
-      const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.12), doorMat);
-      door.position.set(0, doorH / 2, d / 2 + 0.05);
-      house.add(door);
-    }
-
-    const y = (hL + hR + hF + hB) / 4;
-    const rotY = Math.random() * Math.PI * 2;
-    house.position.set(warpX(x, z), y, z);
-    house.rotation.y = rotY;
-    group.add(house);
-
-    if (isDoorHouse) {
-      // The door sits on the house's local +z face - rotate that offset by
-      // the house's actual facing to get its real world position, plus an
-      // extra step further out (along the same outward normal) as the spot
-      // the player needs to stand for the interaction to trigger.
-      const doorLocal = new THREE.Vector3(0, 0, d / 2);
-      const doorWorld = doorLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).add(house.position);
-      const standLocal = new THREE.Vector3(0, 0, d / 2 + 1.6);
-      const standWorld = standLocal.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), rotY).add(house.position);
-      doorInfo = { x: doorWorld.x, z: doorWorld.z, standX: standWorld.x, standZ: standWorld.z, facing: rotY };
-    }
-    placed++;
-  }
-  return { group, door: doorInfo };
+  return buildCoastalVillage(terrain);
 }
 
 export function buildBirds(scene) {

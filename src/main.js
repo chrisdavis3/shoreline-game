@@ -2,21 +2,21 @@ import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=106';
-import { WaterSim } from './water.js?v=106';
+} from './terrain.js?v=107';
+import { WaterSim } from './water.js?v=107';
 import {
   buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=106';
-import { scatterRocks, Rock } from './rocks.js?v=106';
-import { Player } from './player.js?v=106';
-import { AudioSystem } from './audio.js?v=106';
-import { Particles } from './particles.js?v=106';
-import { Debris } from './debris.js?v=106';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=106';
+} from './environment.js?v=107';
+import { scatterRocks, Rock } from './rocks.js?v=107';
+import { Player } from './player.js?v=107';
+import { AudioSystem } from './audio.js?v=107';
+import { Particles } from './particles.js?v=107';
+import { Debris } from './debris.js?v=107';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=107';
 import { buildHiddenDoor } from './hidden-door.js';
 import { buildMillValley } from './mill.js';
-import { Bulldozer, Excavator } from './vehicles.js?v=106';
+import { Bulldozer, Excavator } from './vehicles.js?v=107';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -36,7 +36,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 106;
+const APP_VERSION = 107;
 
 // ---------- renderer / scene / camera ----------
 

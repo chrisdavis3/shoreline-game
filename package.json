@@ -2,6 +2,10 @@
   "name": "shoreline",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node tests/mill.test.js" },
-  "dependencies": { "three": "0.160.0" }
+  "scripts": {
+    "test": "node tests/mill.test.js && node tests/village.test.js"
+  },
+  "dependencies": {
+    "three": "0.160.0"
+  }
 }
