@@ -1,12 +1,12 @@
-import { GroundedScenery } from './grounded-scenery.js?v=111';
-import { CAVE_WATER } from './hidden-cave.js?v=111';
-import { buildCoastalVillage } from './village.js?v=111';
+import { GroundedScenery } from './grounded-scenery.js?v=112';
+import { CAVE_WATER } from './hidden-cave.js?v=112';
+import { buildCoastalVillage } from './village.js?v=112';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, coastT, warpX, insetCells, streamCenterX, idx,
   L2_LIP_X, L2_T_FALL0, L2_T_FALL1,
-} from './terrain.js?v=111';
-import { Noise2D } from './noise.js?v=111';
+} from './terrain.js?v=112';
+import { Noise2D } from './noise.js?v=112';
 
 const decoNoise = new Noise2D(555);
 
@@ -454,36 +454,6 @@ export function scatterProps(terrain,water) {
   }
   group.add(wood);
 
-  // A single sea-arch at the tip of the right-hand headland - a small nod toward
-  // "rocks and caves" without reworking the whole rectangular map into a true
-  // irregular bay (a much larger change - would touch the water sim's grid
-  // indexing, spawn logic, and the ocean/skirt bounds). Purely decorative: two
-  // rock stacks with a rough lintel bridging them, no collision.
-  const archMat = new THREE.MeshStandardMaterial({ color: '#6b6a63', roughness: 0.97, flatShading: true });
-  const archX = SIZE * 0.90;
-  // The coastline itself now wanders a lot (real coves/points), so find where it
-  // actually sits at this column rather than assuming the old flat ~0.62 cutoff.
-  const archZ = SIZE * coastT(Math.round(archX / CELL));
-  const archGroup = new THREE.Group();
-  const stackGeo = new THREE.DodecahedronGeometry(1, 0);
-  for (const side of [-1, 1]) {
-    const sx = archX + side * 2.6;
-    const sy = terrain.sampleHeightBilinear(sx, archZ);
-    const stack = new THREE.Mesh(stackGeo, archMat);
-    stack.position.set(sx, sy + 2.1, archZ + (Math.random() - 0.5) * 0.6);
-    stack.scale.set(1.5, 2.4, 1.5);
-    stack.rotation.set(Math.random() * 0.3, Math.random() * Math.PI, Math.random() * 0.2);
-    stack.castShadow = true;
-    stack.receiveShadow = true;
-    archGroup.add(stack);
-  }
-  const lintelY = terrain.sampleHeightBilinear(archX, archZ) + 3.6;
-  const lintel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.35, 5.6, 7), archMat);
-  lintel.rotation.z = Math.PI / 2;
-  lintel.position.set(archX, lintelY, archZ);
-  lintel.castShadow = true;
-  archGroup.add(lintel);
-  group.add(archGroup);
   grounded.update(grounded.items.length);
   group.userData.updateScenery=()=>grounded.update();
   return group;

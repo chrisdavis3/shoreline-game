@@ -1,5 +1,7 @@
+import { mappedBuildings } from './mawgan-map.js?v=112';
+import { landscapeHeight } from './mawgan-surround.js?v=112';
 import * as THREE from '../vendor/three.module.js';
-import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=111';
+import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=112';
 
 // Static architecture is merged by material after placement. Detail should not
 // turn a small village into hundreds of separate draw calls on a phone.
@@ -51,30 +53,33 @@ export function buildCoastalVillage(terrain) {
     const mesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     mesh.position.set(x,y,z);mesh.rotation.z=rotation;parent.add(mesh);return mesh;
   }
-  for (let attempt=0; attempt<1600 && placements.length<24; attempt++) {
-    const x=14+rand()*59, z=3+rand()*17;
-    const w=3.2+rand()*1.6, d=3.0+rand()*1.5;
-    const rotation=(rand()-.5)*.42;
+  const sites=[...mappedBuildings].sort((a,b)=>Math.hypot(a.x-92,a.z-8)-Math.hypot(b.x-92,b.z-8));
+  for (const site of sites) {
+    const {x,z}=site;
+    const w=Math.max(1.35,Math.min(12,site.w)),d=Math.max(1.35,Math.min(12,site.d));
+    const rotation=site.rotation;
     const radius=Math.hypot(w,d)/2;
-    if(Math.abs(x-streamCenterX(z))<15)continue;
+    if(Math.abs(x-streamCenterX(z))<radius+3.2)continue;
     if(terrain.blocked[idx(Math.round(x/CELL),Math.round(z/CELL))])continue;
     if(placements.some(p=>Math.hypot(p.x-x,p.z-z)<p.radius+radius+.65))continue;
     const corners=[];
     for(const xx of [-w/2,w/2])for(const zz of [-d/2,d/2]){
       const wx=x+xx*Math.cos(rotation)+zz*Math.sin(rotation);
       const wz=z-xx*Math.sin(rotation)+zz*Math.cos(rotation);
-      corners.push(terrain.sampleHeightBilinear(wx,wz));
+      corners.push(landscapeHeight(terrain,wx,wz));
     }
     const low=Math.min(...corners), high=Math.max(...corners);
-    if(high-low>.75)continue;
+    if(high-low>2.5 || low<2.6)continue;
     // Foundations descend into the slope; the walls begin above the highest
     // corner. Averaging corner heights left half the old houses floating.
     const y=high+.06, plinthHeight=high-low+.25;
     const house=new THREE.Group();house.position.set(warpX(x,z),y,z);house.rotation.y=rotation;root.add(house);
+    // Match the compressed map's proportions while keeping the doorway readable.
+    house.scale.y=.72;
     const hero=placements.length===0;
-    const storeys=rand()>.5?2:1, height=storeys===2?3.9:2.5;
+    const storeys=Math.min(w<2.5?1:2,site.levels), height=storeys===2?3.4:1.9;
     const wall=plaster[placements.length%plaster.length];
-    box(house,w+.16,plinthHeight,d+.16,foundation,0,-plinthHeight/2+.08,0);
+    box(house,w+.16,plinthHeight/.72,d+.16,foundation,0,(-plinthHeight/2+.08)/.72,0);
     box(house,w,height,d,wall,0,height/2,0);
     const rise=w*.28, pitch=Math.atan2(rise,w/2), roofLength=Math.hypot(w/2+.16,rise+.09);
     const gable=new THREE.Shape();gable.moveTo(-w/2,0);gable.lineTo(w/2,0);gable.lineTo(0,rise);gable.closePath();
@@ -83,15 +88,15 @@ export function buildCoastalVillage(terrain) {
     for(const side of [-1,1]) {
       box(house,roofLength,.13,d+.4,slate,side*w/4,height+rise/2,0,-side*pitch);
       for(const zz of [-d/2-.21,d/2+.21])box(house,roofLength,.10,.09,trim,side*w/4,height+rise/2,zz,-side*pitch);
-      for(let row=1;row<7;row++) {
-        const fraction=row/7;
+      for(let row=1;row<4;row++) {
+        const fraction=row/4;
         box(house,.025,.018,d+.36,slateSeams,side*fraction*w/2,height+rise*(1-fraction)+.09,0,-side*pitch);
       }
       box(house,.10,.13,d+.4,trim,side*(w/2+.12),height-.025,0);
     }
     box(house,.13,.12,d+.38,slateSeams,0,height+rise+.04,0);
     // Frames and shallow reveals give windows depth at ordinary play distance.
-    function windowOn(parent,wx,wy,wz,width=.68) {
+    function windowOn(parent,wx,wy,wz,width=.48) {
       box(parent,width+.16,.98,.08,trim,wx,wy,wz);
       box(parent,width,.81,.10,glass,wx,wy,wz+.055);
       box(parent,.045,.82,.035,trim,wx,wy,wz+.12);
@@ -100,13 +105,13 @@ export function buildCoastalVillage(terrain) {
     }
     for(const side of [-1,1]) {
       const facade=new THREE.Group();facade.rotation.y=side===1?0:Math.PI;house.add(facade);
-      for(const wx of [-w*.29,w*.29]) windowOn(facade,wx,1.55,d/2+.01);
-      if(storeys===2)for(const wx of [-w*.29,w*.29])windowOn(facade,wx,3.05,d/2+.01);
+      for(const wx of [-w*.29,w*.29]) windowOn(facade,wx,1.3,d/2+.01);
+      if(storeys===2)for(const wx of [-w*.29,w*.29])windowOn(facade,wx,2.7,d/2+.01);
     }
     for(const side of [-1,1]) {
       const end=new THREE.Group();end.position.x=side*w/2;end.rotation.y=side*Math.PI/2;house.add(end);
-      windowOn(end,0,1.55,.015,.8);
-      if(storeys===2)windowOn(end,0,3.05,.015,.8);
+      windowOn(end,0,1.3,.015,.48);
+      if(storeys===2)windowOn(end,0,2.7,.015,.48);
     }
     box(house,.92,1.91,.11,trim,0,.95,d/2+.05);
     box(house,.73,1.75,.12,hero?redDoor:timber,0,.89,d/2+.12);

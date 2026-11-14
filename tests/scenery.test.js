@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as THREE from '../vendor/three.module.js';
-import {GroundedScenery} from '../src/grounded-scenery.js?v=111';
+import {GroundedScenery} from '../src/grounded-scenery.js?v=112';
 let ground=4,depth=0;
 const terrain={sampleHeightBilinear:()=>ground,cellIndexAt:()=>0,disturbance:new Float32Array(1)};
 const water={depthAt:()=>depth};

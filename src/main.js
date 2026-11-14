@@ -1,22 +1,24 @@
+import {buildCoastalOcean} from './coastal-ocean.js?v=112';
+import {buildMawganSurround} from './mawgan-surround.js?v=112';
 import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=111';
-import { WaterSim } from './water.js?v=111';
+} from './terrain.js?v=112';
+import { WaterSim } from './water.js?v=112';
 import {
-  buildSky, buildOcean, scatterProps, buildBirds, buildSkirt, buildVillage,
+  buildSky, scatterProps, buildBirds, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=111';
-import { scatterRocks, Rock } from './rocks.js?v=111';
-import { Player } from './player.js?v=111';
-import { AudioSystem } from './audio.js?v=111';
-import { Particles } from './particles.js?v=111';
-import { Debris } from './debris.js?v=111';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=111';
-import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=111';
-import { buildMillValley } from './mill.js';
-import { Bulldozer, Excavator } from './vehicles.js?v=111';
+} from './environment.js?v=112';
+import { scatterRocks, Rock } from './rocks.js?v=112';
+import { Player } from './player.js?v=112';
+import { AudioSystem } from './audio.js?v=112';
+import { Particles } from './particles.js?v=112';
+import { Debris } from './debris.js?v=112';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=112';
+import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=112';
+import { buildMillValley } from './mill.js?v=112';
+import { Bulldozer, Excavator } from './vehicles.js?v=112';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -36,7 +38,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 111;
+const APP_VERSION = 112;
 
 // ---------- renderer / scene / camera ----------
 
@@ -55,7 +57,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xcfe0dd, 70, 420);
+scene.fog = new THREE.Fog(0xcfe0dd, ACTIVE_LEVEL_ID==='level1'?180:70, ACTIVE_LEVEL_ID==='level1'?600:420);
 
 const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1600);
 
@@ -73,7 +75,7 @@ window.addEventListener('resize', () => {
 // Hemi intensity brought down from 0.85 - that much flat ambient fill was
 // competing with the sun and softening every shadow/AO cue into a flat wash,
 // which is a big part of what read as "flat" to begin with.
-const hemi = new THREE.HemisphereLight(0xaad2ea, 0x776a45, 0.7);
+const hemi = new THREE.HemisphereLight(0xaad2ea, ACTIVE_LEVEL_ID==='level1'?0x687268:0x776a45, 0.7);
 scene.add(hemi);
 
 // Fill light: a real Cornish coast (see the reference photos this pass was
@@ -94,7 +96,7 @@ scene.add(fill);
 // Sun brought up correspondingly (hemi's fill dropped) and warmed slightly - a
 // warm key light against the cooler sky fill is what actually separates grass/
 // rock/sand tonally instead of everything reading under the same flat wash.
-const sun = new THREE.DirectionalLight(0xffe6b8, 2.15);
+const sun = new THREE.DirectionalLight(ACTIVE_LEVEL_ID==='level1'?0xfff5e5:0xffe6b8, ACTIVE_LEVEL_ID==='level1'?1.9:2.15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 1;
@@ -134,7 +136,7 @@ if (ACTIVE_LEVEL_ID === 'level2') {
   cascade = buildWaterfallCascade(terrain);
   scene.add(cascade.mesh);
 } else if (ACTIVE_LEVEL_ID === 'level1') {
-  ocean = buildOcean(water.uniforms);
+  ocean = buildCoastalOcean(water);
   scene.add(ocean.mesh);
 }
 
@@ -187,7 +189,7 @@ scene.add(player.mesh);
 if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
 else if (ACTIVE_LEVEL_ID === 'level3') player.setSpawn(76, 60);
 else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(L2_LIP_X + 7, (L2_T_FALL1 + .045) * SIZE); // just below the falls' landing pool
-else player.setSpawn(SIZE * 0.72 - 6, SIZE * 0.22);
+else player.setSpawn(92, 32);
 
 const particles = new Particles(scene, 320);
 const debris = new Debris(scene, terrain, water);
@@ -242,7 +244,7 @@ if (ACTIVE_LEVEL_ID === 'level3') {
   player.walkHeight = waterfallCave.walkHeight;
   scene.add(waterfallCave.group);
 } else {
-  scene.add(buildSkirt(terrain));
+  scene.add(buildMawganSurround(terrain));
   const village = buildVillage(terrain);
   scene.add(village.group);
   villageDoor = village.door;
@@ -509,6 +511,7 @@ const INTRO_START_DIST = 95;
 const INTRO_DURATION = 2.8;
 
 let camYaw = Math.PI;
+let overviewMode = false;
 let camDistTarget = DEFAULT_DIST;
 let camDist = INTRO_START_DIST;
 let introTimer = 0;
@@ -545,6 +548,14 @@ function updateCamera(dt) {
     camDist += (camDistTarget - camDist) * Math.min(1, dt * 4);
   }
 
+  if(overviewMode && ACTIVE_LEVEL_ID==='level1') {
+    const aspect=camera.aspect;
+    camera.position.lerp(new THREE.Vector3(57,aspect<.7?275:170,aspect<.7?245:205),Math.min(1,dt*5));
+    camera.lookAt(57,0,42);
+    sun.position.copy(player.pos).add(sunDir.clone().multiplyScalar(30));
+    sun.target.position.copy(player.pos);
+    return;
+  }
   const target = camSubject.pos.clone().add(camLookOffset);
   const offset = new THREE.Vector3(
     Math.sin(camYaw) * Math.cos(camPitch) * camDist,
@@ -1308,7 +1319,8 @@ const controls = document.getElementById('controlsDialog');
 document.getElementById('helpBtn').onclick = () => controls.showModal();
 document.getElementById('closeHelp').onclick = () => controls.close();
 document.getElementById('overviewBtn').onclick = () => {
-  camDistTarget = camDistTarget > 70 ? DEFAULT_DIST : 115;
+  if(ACTIVE_LEVEL_ID==='level1'){overviewMode=!overviewMode;document.getElementById('overviewBtn').textContent=overviewMode?'Explore':'Overview';}
+  else camDistTarget = camDistTarget > 70 ? DEFAULT_DIST : 115;
   introTimer = INTRO_DURATION;
 };
 // ---------- auto-update on a stale tab ----------

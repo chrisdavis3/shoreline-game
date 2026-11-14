@@ -4,19 +4,19 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
-import { terrainVersionFor } from './terrain.js?v=111';
+import { terrainVersionFor } from './terrain.js?v=112';
 
 // Each level gets its own independent save slot, keyed by level id, so
-// progress in one never overwrites or gets clobbered by the other. Level 1's
-// key is left byte-identical to before this existed (any existing player's
-// save keeps loading normally); level 2 (and any future level) just gets its
-// own fresh key.
+// progress in one never overwrites the other. The rebuilt beach writes to a
+// versioned slot, preserving the legacy beach even if backup creation fails.
+// Existing gorge and mill slots remain compatible.
 const KEY_BY_LEVEL = {
   level1: 'shoreline_save_v1',
   level2: 'shoreline_save_level2_v1',
   level3: 'shoreline_save_level3_v1',
 };
 function keyFor(levelId) { return KEY_BY_LEVEL[levelId] || KEY_BY_LEVEL.level1; }
+function activeKey(levelId) { return levelId==='level1' ? keyFor(levelId)+'_terrain_'+terrainVersionFor(levelId) : keyFor(levelId); }
 const SCHEMA_VERSION = 1;
 
 function f32ToBase64(arr) {
@@ -65,7 +65,7 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
       // reading it back is guarded with Array.isArray in main.js.
       vehicles: Array.isArray(vehicles) ? vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, heading: v.facing })) : undefined,
     };
-    localStorage.setItem(keyFor(levelId), JSON.stringify(data));
+    localStorage.setItem(activeKey(levelId), JSON.stringify(data));
     return true;
   } catch (e) {
     console.warn('[shoreline] save failed (localStorage full or unavailable):', e);
@@ -75,7 +75,7 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
 
 export function loadSavedData(levelId = 'level1') {
   try {
-    const raw = localStorage.getItem(keyFor(levelId));
+    const raw = localStorage.getItem(activeKey(levelId)) || localStorage.getItem(keyFor(levelId));
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data.v !== SCHEMA_VERSION) return null; // don't try to apply an incompatible shape
@@ -83,7 +83,7 @@ export function loadSavedData(levelId = 'level1') {
     // silently overwrite freshly (newly) generated terrain with an old raw
     // height snapshot - wrong falls position, no lake, etc. - while
     // everything else keeps using the new constants. Terrain-shape changes
-    // discard old saves for that level rather than risk that mismatch;
+    // preserve incompatible saves separately rather than apply that mismatch;
     // saves missing terrainV entirely predate this check and are treated
     // the same as a mismatch (discarded), not assumed compatible.
     if (data.terrainV !== terrainVersionFor(levelId)) {
@@ -101,7 +101,7 @@ export function loadSavedData(levelId = 'level1') {
 }
 
 export function clearSave(levelId = 'level1') {
-  try { localStorage.removeItem(keyFor(levelId)); } catch (e) { /* ignore */ }
+  try { localStorage.removeItem(activeKey(levelId)); } catch (e) { /* ignore */ }
 }
 
 // Applies a loaded save onto already-constructed terrain/water (which must have

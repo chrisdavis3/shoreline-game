@@ -1,10 +1,10 @@
-import { CAVE_X,CAVE_BACK,CAVE_MOUTH } from './hidden-cave.js?v=111';
+import { CAVE_X,CAVE_BACK,CAVE_MOUTH } from './hidden-cave.js?v=112';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1, L2_TOP_H,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=111';
+} from './terrain.js?v=112';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -302,8 +302,10 @@ export class WaterSim {
     this.uniforms = {
       uCave: {value:new THREE.Vector4(CAVE_X,CAVE_BACK,CAVE_MOUTH,getActiveLevel()==='level2'?1:0)},
       uTime: { value: 0 },
+      uOpenSea: { value: getActiveLevel()==='level1'?1:0 },
+      uFarOcean: {value:0},
       uTideLevel: { value: this.tideLevel },
-      uShallowColor: { value: new THREE.Color('#77a49a') },
+      uShallowColor: { value: new THREE.Color(getActiveLevel()==='level1'?'#4e827b':'#77a49a') },
       uDeepColor: { value: new THREE.Color('#244f61') },
       uFoam: { value: new THREE.Color('#eef6f2') },
       uSunDir: { value: new THREE.Vector3(0.4, 0.8, 0.3).normalize() },
@@ -328,6 +330,9 @@ export class WaterSim {
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
+        uniform float uTideLevel;
+        uniform float uOpenSea;
+        uniform float uFarOcean;
 
         // Manual bilinear sample - textures are NEAREST-filtered (see mkFieldTexture
         // in water.js for why), so this does the interpolation in plain arithmetic
@@ -374,6 +379,12 @@ export class WaterSim {
           vSurfaceSlope = flowField.ba;
           float terrainH = smoothBed(aFieldUV);
 
+          if(uFarOcean>0.5 && uOpenSea>0.5){aDepth=10.0;vDepth=10.0;vFlow=0.0;vFlowDir=vec2(0.0);vSurfaceSlope=vec2(0.0);terrainH=uTideLevel-10.0;}
+          if(uOpenSea>0.5 && uFarOcean<0.5) {
+            float surface=sampleBilinear(uHeightTex,aFieldUV).g;
+            aDepth=depthFlow.r>.003 ? max(0.0,surface-terrainH) : 0.0;
+            vDepth=aDepth;
+          }
           vec3 pos = position;
           pos.y = terrainH + aDepth + 0.006;
           float ripple = sin(pos.x * 1.3 + uTime * 1.6) * 0.02 + cos(pos.z * 1.1 - uTime * 1.3) * 0.02;
@@ -393,6 +404,14 @@ export class WaterSim {
           float wavePhase = fract((pos.z + uTime * 5.5) / 7.5);
           float crest = pow(max(0.0, sin(wavePhase * 6.28318)), 5.0);
           pos.y += crest * shoreZone * 0.16 * min(1.0, aDepth * 6.0);
+          if(uOpenSea>0.5){
+            float offshore=smoothstep(68.0,78.0,pos.z);
+            pos.y=mix(pos.y,uTideLevel+.006,offshore);
+            // In the tidal boundary zone, intersect the shared tide plane with
+            // the smooth bed. Keep signed depth for a continuous shoreline.
+            vDepth=mix(vDepth,uTideLevel-terrainH,offshore);
+          }
+          if(uFarOcean>0.5)pos.y=uTideLevel+.006;
           vCrest = crest * shoreZone;
           vec4 world = modelMatrix * vec4(pos, 1.0);
           vWorldPos = world.xyz;
@@ -414,6 +433,7 @@ export class WaterSim {
         varying float vCrest;
         varying vec3 vWorldPos;
         uniform float uTime;
+        uniform float uOpenSea;
         uniform vec4 uCave;
         uniform vec3 uShallowColor;
         uniform vec3 uDeepColor;
@@ -472,10 +492,11 @@ export class WaterSim {
           // (1cm) hides that trace-level noise while a real flowing edge, which
           // the sim actually seeds/relaxes to a meaningful depth, is unaffected.
           if (vDepth < 0.01) discard;
-          float depthN = clamp(vDepth / 3.2, 0.0, 1.0);
+          float seaBlend=uOpenSea*smoothstep(74.0,98.0,vWorldPos.z);
+          float depthN = mix(clamp(vDepth / 3.2, 0.0, 1.0),1.0,seaBlend);
           vec3 base = mix(uShallowColor, uDeepColor, depthN);
           float shimmer = sin(vWorldPos.x * 2.2 + uTime * 1.8) * cos(vWorldPos.z * 2.0 - uTime * 1.4);
-          base += shimmer * 0.02;
+          base += shimmer * mix(.02,.003,uOpenSea) * (1.0-seaBlend);
           // Streaks of surface texture travel WITH the actual current (vFlowDir, the
           // sim's real per-cell velocity), not just a fixed ambient shimmer pattern -
           // that's what actually reads as "the river is moving" rather than the
@@ -523,6 +544,7 @@ export class WaterSim {
           base = mix(base, sky, fresnel * 0.35);
           float diff = clamp(dot(nrm, uSunDir), 0.0, 1.0);
           base *= (0.95 + diff * 0.55);
+          base=mix(base,uDeepColor*1.35,seaBlend);
           // A deliberate wet-edge BAND, not "brightest at the thinnest possible
           // sliver of water": the old smoothstep(0.14, 0.0, vDepth) peaked at
           // vDepth==0 (right at the discard cutoff), which meant literally any
@@ -534,8 +556,13 @@ export class WaterSim {
           // a real, deliberate "just past the water's edge" foam line instead.
           float foamEdge = smoothstep(0.01, 0.05, vDepth) * (1.0 - smoothstep(0.05, 0.42, vDepth));
           float foamFlow = smoothstep(0.55, 1.4, vFlow) * smoothstep(0.02, 0.25, vDepth);
-          float surfFoam = smoothstep(0.3, 0.85, vCrest) * smoothstep(0.02, 0.2, vDepth);
-          float foam = clamp(foamEdge * 0.08 + foamFlow * 0.22 + surfFoam * 0.8 + streakVis * 0.06, 0.0, 1.0);
+          float wave=sin((vWorldPos.z+uTime*3.3+sin(vWorldPos.x*.08)*2.6)*.72);
+          float breaker=pow(max(0.0,wave),12.0);
+          float surfFoam=mix(smoothstep(0.3,0.85,vCrest),breaker,uOpenSea)*mix(smoothstep(.02,.2,vDepth),smoothstep(.12,.5,vDepth),uOpenSea);
+          surfFoam*=1.0-smoothstep(100.0,165.0,vWorldPos.z)*uOpenSea;
+          surfFoam*=mix(1.0,smoothstep(82.0,90.0,vWorldPos.z)*smoothstep(.5,1.8,vDepth),uOpenSea);
+          surfFoam*=mix(1.0,.65*smoothstep(.18,.68,valueNoise(vWorldPos.xz*.17+vec2(0.0,uTime*.12))),uOpenSea);
+          float foam = clamp((foamEdge * 0.08 + foamFlow * 0.22 + streakVis * 0.06)*(1.0-seaBlend) + surfFoam * 0.8, 0.0, 1.0);
           // Break the foam up into a mottled, bubbly texture instead of a flat tint -
           // two noise octaves drifting at slightly different speeds so it looks like
           // it's actually churning, not a static painted-on band.
@@ -555,10 +582,14 @@ export class WaterSim {
           // makes the open-sea reach of this mesh read as solid water, matching
           // how the backdrop plane already reads, without touching the shallow
           // end's deliberate translucency at all (depthN is ~0 there).
-          float alpha = mix(0.48, 0.94, depthN);
+          float alpha = mix(mix(.48,.30,uOpenSea),mix(.94,.98,uOpenSea),depthN);
           alpha = mix(alpha, 0.88, foam * 0.55);
           alpha *= smoothstep(0.01, 0.09, vDepth);
           gl_FragColor = vec4(color, alpha);
+          if(uOpenSea>.5) {
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+          }
         }
       `,
     });
@@ -1016,6 +1047,7 @@ export class WaterSim {
     const dfData = this._depthFlowTex.image.data;
     const velData = this._velTex.image.data;
     const hData = this._heightTex.image.data;
+    const openSea=this.uniforms.uOpenSea.value>.5;
 
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
@@ -1049,6 +1081,16 @@ export class WaterSim {
         velData[p + 2] = (hr - hl) / (2 * CELL);
         velData[p + 3] = (hf - hb) / (2 * CELL);
         hData[p] = th[k];
+        let surfaceHeight=surface;
+        if(openSea && this.depth[k]<.01){
+          let total=0,weight=0;
+          if(this.depth[left]>.01){total+=th[left]+this.depth[left];weight++;}
+          if(this.depth[right]>.01){total+=th[right]+this.depth[right];weight++;}
+          if(this.depth[back]>.01){total+=th[back]+this.depth[back];weight++;}
+          if(this.depth[front]>.01){total+=th[front]+this.depth[front];weight++;}
+          if(weight)surfaceHeight=total/weight;
+        }
+        hData[p+1]=surfaceHeight;
       }
     }
 

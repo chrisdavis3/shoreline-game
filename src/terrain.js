@@ -1,5 +1,7 @@
+import { mawganHeight, mawganHardness, mawganStream, mawganColour } from './mawgan.js?v=112';
+import { coastalMaterial } from './coastal-material.js?v=112';
 import * as THREE from '../vendor/three.module.js';
-import { Noise2D } from './noise.js?v=111';
+import { Noise2D } from './noise.js?v=112';
 import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
@@ -17,7 +19,7 @@ import { millHeight, bypassX } from './mill-layout.js';
 // height array (old falls position, no lake) was overwriting the new
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
-export const TERRAIN_VERSION = 7;
+export const TERRAIN_VERSION = 8;
 export const terrainVersionFor = level => level === 'level2' ? 9 : level === 'level3' ? 10 : TERRAIN_VERSION;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell
@@ -43,36 +45,8 @@ let ACTIVE_LEVEL = 'level1';
 export function setActiveLevel(id) { ACTIVE_LEVEL = LEVEL_IDS.includes(id) ? id : 'level1'; }
 export function getActiveLevel() { return ACTIVE_LEVEL; }
 
-// Stream centreline: a gentle meander from the dunes down to the sea.
-//
-// CORRECTED (this was backwards for a whole prior session): earlier code and
-// an earlier web search both claimed the real River Menalhyl "meanders along
-// Mawgan Porth's southern edge" and placed the stream near i=31 (low i,
-// close to the southern end). Independently re-verified this time by
-// pulling the ACTUAL OpenStreetMap topology instead of trusting either
-// claim: Overpass way 307894885 ("River Menalhyl") plus its connected
-// unnamed "stream" ways (30348987, 1176294924-27) trace a continuous
-// waterway from inland, ending at node 334634419 (50.465113, -5.0321424).
-// Projected onto the real coastline (way 62688995) between the two
-// headlands that flank Mawgan Porth beach, that mouth sits at ~99% of the
-// way along the bay from its southern end (i.e. i~137 of 139) - hard up
-// against the NORTHERN headland, not the southern one. (The user's own
-// on-screen observation of the live game is what triggered re-checking this
-// - it was right, the prior "southern edge" research was wrong.)
-//
-// Placed at a mirror image of the old (wrong) 0.22-from-the-south position -
-// 0.78, i.e. the same ~31-cell margin from the NORTH edge (i=GRID-1) this
-// time - rather than pushing all the way out to the literal i~137 the real
-// mouth projects to. Going any closer to the edge than that runs the stream
-// into insetCells()'s dune-line taper band below (up to ~17 cells wide at
-// t=0, see insetCells' own comment for the exact current figure), which would
-// re-introduce the exact "wizard hat" pinch that band was built to avoid (see
-// insetCells' own comment). 31 cells of margin keeps the stream clear of it at
-// every t, same as the old placement did on the other side.
-function streamCenterXLevel1(z) {
-  const t = z / SIZE;
-  return SIZE * 0.78 + Math.sin(t * 5.4 + 0.6) * SIZE * 0.06 * (0.4 + t) + n2.fbm(0, t * 3, 2) * SIZE * 0.03;
-}
+// x runs north to south; the Menalhyl follows the southern beach margin.
+function streamCenterXLevel1(z) { return mawganStream(z); }
 
 // ---------------------------------------------------------------------------
 // Level 2 ("Highfall Gorge"): a steep mountain valley whose water source is a
@@ -120,28 +94,8 @@ function streamCenterX(z) {
   return ACTIVE_LEVEL === 'level2' ? streamCenterXLevel2(z) : streamCenterXLevel1(z);
 }
 
-// The coastline's t-threshold (0..1, inland->sea) as a function of column i.
-//
-// CORRECTED AGAIN (this went through two wrong versions before this one - see
-// git history/TESTING_FEEDBACK.md): first traced from the wrong OSM way
-// entirely, then from a "real" OSM way that turned out to have a dramatic
-// ~0.42-deep, sharply-peaked bulge in the middle of the bay - which rendered,
-// verified via a raw top-down data image (bypassing 3D lighting entirely),
-// as an unmistakable sharp mountain-shaped wedge of sea jutting into the
-// sand, not a coastline. That matches the user's own screenshot complaint
-// exactly (a pointed wedge where sea meets sand) - so that data, however it
-// was traced, was wrong for this purpose regardless of source.
-//
-// This version is built from actual reference photos instead of a hand-traced
-// OSM way: a drone aerial of the whole bay (oblique) and a ground-level shot
-// from the dune line showing both headlands in one frame. Both show the same
-// thing - a wide, gently-curving crescent bay with an almost STRAIGHT
-// sea-facing edge (waves roll in close to parallel to the dune line - there's
-// no dramatic bulge or pinch anywhere along it). The actual bay-mouth-to-mouth
-// TAPER (narrow at the dune line, fanning out toward the sea) is already
-// handled entirely by insetCells()/warpX() below; this function only needs to
-// supply a gentle, mostly-flat crescent with a slight seaward bulge at the
-// centre and small natural irregularity - not a large per-column swing.
+// Sea coupling begins offshore; the beach profile and tide determine the actual
+// waterline. The inland dune boundary is never used as an ocean outline.
 const coastRoughNoise = new Noise2D(3721);
 
 // Level 2 has no coastline/coves at all - just a still lake pooling at the
@@ -156,23 +110,7 @@ function coastTContinuousLevel2(ci) {
   return L2_LAKE_T0 + coastRoughNoise.fbm(ci * 0.05, 80, 2) * 0.015;
 }
 
-function coastTContinuousLevel1(ci) {
-  const u = THREE.MathUtils.clamp(ci, 0, GRID - 1) / (GRID - 1);
-  const crescent = Math.sin(Math.PI * u); // 0 at both headlands, 1 at the bay's centre
-  const bulge = Math.pow(crescent, 1.3);
-  // 0.66 right off each headland's base (still a real sandy apron there, per
-  // the eye-level photo - sand runs right up to both hills, it doesn't pinch
-  // to nothing) rising gently to 0.76 at the bay's centre - a ~0.10 total
-  // range, an order of magnitude gentler than the old traced data, matching
-  // the reference photos' near-straight waterline.
-  const base = 0.66 + 0.10 * bulge;
-  // Small, low-frequency organic irregularity so the edge doesn't read as a
-  // mathematically perfect sine - real coastlines wobble a little - but kept
-  // an order of magnitude smaller than the swing itself so it can never
-  // reintroduce a wedge/pinch.
-  const rough = coastRoughNoise.fbm(ci * 0.035, 40, 3) * 0.018;
-  return base + rough;
-}
+function coastTContinuousLevel1(ci) { return 0.65; }
 
 export function coastT(i) {
   if (ACTIVE_LEVEL === 'level3') return 0.96;
@@ -189,92 +127,10 @@ function coastTSmooth(i) {
   return ACTIVE_LEVEL === 'level2' ? coastTContinuousLevel2(c) : coastTContinuousLevel1(c);
 }
 
-const edgeRoughNoise = new Noise2D(2718);
-
-// The level's own physical footprint was still a perfect square in world space
-// no matter how the sand/rock/sea classification varied within it - every
-// depth row spanned the full [0, SIZE] width, so the mesh always ended in a
-// hard 90-degree corner where the inland (dune-line) edge met the side edge.
-// First attempt at fixing this scaled every vertex in a row toward the
-// centreline by the same factor - which also dragged in the stream (well off
-// centre) by that same factor, so ITS width visibly tapered to a point near
-// the dune line (an unwanted "wizard hat" on the river) while the actual sand
-// edge, softened by noise, read as a vague round blob instead of a specific
-// outline.
-//
-// SECOND attempt (this one superseded too - see TESTING_FEEDBACK.md and the
-// user's own screenshots) only touched vertices within a band of the nearest
-// side edge, sized purely from t (depth) - 22 cells right at the dune line,
-// fading to 0 by a fixed t=0.30, identical on both sides regardless of what
-// either real headland actually looks like. That produced a big, clean,
-// perfectly symmetric diagonal wedge at each inland corner ("big triangular
-// inlets") with NO relationship to the real coastline data already driving
-// the sand/rock/sea colouring - the taper was the one part of the level's
-// silhouette that was still, literally, generic.
-//
-// THIS version ties the same mechanism to the real per-column data instead:
-// insetCells(i, t) below reads THIS column's own real coastline depth
-// (coastTSmooth(i), the same REAL_COAST_T data _generate() uses for
-// sand/rock/sea and for cliffPotential/nearCoastT). A column whose real
-// coastline already sits close to the dune line (low coastT - a narrow rocky
-// point with almost no beach in front of it, like the literal i=0/i=GRID-1
-// headland columns here) tapers in harder and resolves later; a column with a
-// wide sandy apron in front of it (high coastT) stays close to full width
-// almost immediately. Evaluated per-vertex (not once per edge), so the two
-// sides need not behave identically, and a little organic noise breaks the
-// curve up so it reads as an uneven natural edge rather than one clean
-// geometric wedge. Peak width and reach are deliberately kept modest (well
-// under the old 22-cell/t=0.30 figures) - the point of this taper is only to
-// round off the literal inland corner without a jarring right angle; the
-// actual organic bay/headland shape should come from the real coastline
-// colouring and cliff relief, not from this seam being a competing shape in
-// its own right.
-//
-// Still only touches vertices within insetCells() of whichever side edge is
-// nearest - the stream (now ~31 cells in from i=GRID-1, see streamCenterX -
-// it was ~31 cells in from i=0 before the river-side fix) stays safely outside
-// this band at every depth (max reach below is ~17 cells), so it renders
-// exactly as the water sim computes it. Only x is warped (z/depth untouched),
-// and only render positions - the (i, j) simulation grid underneath stays a
-// rectangle.
-export function insetCells(i, t) {
-  // Level 2 is a valley cut by rock walls, not an organic coastline - it wants
-  // straight edges right out to the map boundary (the walls themselves already
-  // supply all the shape), not level 1's coastline-tracing taper. Returning 0
-  // here makes warpX() below a no-op automatically (see its own early-out).
-  if (ACTIVE_LEVEL !== 'level1') return 0;
-  const ct = coastTSmooth(i);
-  // 0 = a narrow rocky point (real coastline already close to the dune line),
-  // 1 = a wide sandy apron in front of this column.
-  const openness = THREE.MathUtils.clamp((ct - 0.35) / 0.45, 0, 1);
-  const peakInset = 16 - 6 * openness;       // 10-16 cells right at the dune line
-  const taperEndT = 0.10 + 0.06 * openness;  // fully resolved to full width by this t
-  const wt = THREE.MathUtils.clamp(t / taperEndT, 0, 1);
-  const base = peakInset * (1 - Math.pow(wt, 1.4));
-  // Organic irregularity, faded out at both ends of the band (wt=0 right at
-  // the dune line, where the boundary must stay exact and predictable, and
-  // wt=1 where it's already resolved to full width) so it can only roughen
-  // the taper's middle, never widen it past its own peak or reopen it once
-  // resolved.
-  const rough = edgeRoughNoise.fbm(i * 0.15, t * 14, 2) * 2.6 * wt * (1 - wt);
-  return Math.max(0, base + rough);
-}
-
-export function warpX(x, z) {
-  const t = z / SIZE;
-  const i = x / CELL;
-  const side = i < (GRID - 1) / 2 ? 0 : 1; // 0 = south edge (i=0), 1 = north edge (i=GRID-1)
-  const edgeDist = side === 0 ? i : (GRID - 1 - i);
-  const blendWidth = insetCells(i, t);
-  if (blendWidth <= 0.001) return x;
-  if (edgeDist >= blendWidth) return x; // safely inside the untouched middle - stream lives here
-  const insetAmount = blendWidth * 0.8; // how far the true edge itself gets pulled inward
-  const localT = edgeDist / blendWidth; // 0 at the literal edge, 1 at the blend boundary
-  const eased = Math.pow(localT, 0.7);
-  const newEdgeDist = insetAmount + (blendWidth - insetAmount) * eased; // monotonic, continuous at the blend boundary
-  const newI = side === 0 ? newEdgeDist : (GRID - 1) - newEdgeDist;
-  return newI * CELL;
-}
+// The physical and visible coordinates now agree throughout the beach.
+// Its outline comes from the reference terrain, not a warped rectangular edge.
+export function insetCells(i,t) { return 0; }
+export function warpX(x,z) { return x; }
 
 // ---------------------------------------------------------------------------
 // Render/simulation resolution decoupling.
@@ -290,9 +146,9 @@ export function warpX(x, z) {
 // depression instead of a single coarse vertex tugging at a ~1.64m-wide fan of
 // triangles (which is what made a dug hole read as barely more than a colour
 // smudge before this change).
-export const RENDER_SUBDIV = 4;                          // fine vertices per coarse cell edge
-export const FINE_GRID = (GRID - 1) * RENDER_SUBDIV + 1; // 557 vertices/side
-export const FINE_CELL = CELL / RENDER_SUBDIV;           // ~0.205m
+export const RENDER_SUBDIV = 3;                          // fine vertices per coarse cell edge
+export const FINE_GRID = (GRID - 1) * RENDER_SUBDIV + 1; // 418 vertices/side
+export const FINE_CELL = CELL / RENDER_SUBDIV;           // ~0.273m
 
 const nFine1 = new Noise2D(6161);
 const nFine2 = new Noise2D(7331);
@@ -421,6 +277,7 @@ export class Terrain {
       metalness: 0.0,
       flatShading: false,
     });
+    if(ACTIVE_LEVEL === 'level1') this.material=coastalMaterial();
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.receiveShadow = true;
     this.mesh.castShadow = false;
@@ -503,364 +360,11 @@ export class Terrain {
   }
 
   _generateLevel1() {
-    for (let j = 0; j < GRID; j++) {
-      for (let i = 0; i < GRID; i++) {
-        const x = i * CELL, z = j * CELL;
-        const t = z / SIZE; // 0 inland -> 1 sea
-
-        // Base profile modelled loosely on Mawgan Porth: a wide bay with a long,
-        // gently-shelving sandy beach (broad low-tide sands), dunes at the back,
-        // and rocky headlands closing off both sides of the bay.
-        // Build the LAND profile first (as if there were no sea at all), then blend
-        // to a fixed sea depth right at the coastline over a narrow, fixed-width
-        // transition. Earlier this used a single subtractive dip term whose onset
-        // was entangled with the ambient inland slope - a big swing in the
-        // coastline threshold barely moved the real land/sea crossing point
-        // (measured: +/-0.3 in threshold only moved the crossing by +/-0.09).
-        // Blending against a flat, coastline-independent sea depth instead means
-        // the crossing point tracks the threshold almost exactly, so real coves
-        // and points actually show up at the scale they're specified.
-        let hLand = 0;
-        hLand += (1 - t) * 5.2;                              // gentle overall inland-to-sea slope
-        hLand += Math.exp(-Math.pow((t - 0.10) / 0.09, 2)) * 2.5;  // primary dune ridge
-        hLand += Math.exp(-Math.pow((t - 0.24) / 0.09, 2)) * 1.0;  // secondary, lower dune ridge
-
-        // Rocky headlands: Berryl's Point at the southern end (i=0) and Trenance
-        // Point at the northern end (i=GRID-1) - the real rock formations that
-        // flank the real coastline (see REAL_COAST_T above) at its two ends. Note
-        // the river/stream enters right against the Trenance Point end (high i),
-        // not Berryl's Point - see streamCenterX's own comment. An exponent above 1
-        // keeps the derivative bounded near the edge (the earlier exponent-below-1
-        // version jumped straight to ~40% mask height in its very first active
-        // cell, a visible seam - see the fix history). Only actually renders as
-        // cliff past the dune line in z - inland of that it's ordinary dunes.
-        //
-        // Actually looking at the real map (twice got this backwards before -
-        // first as a constant width, then tapering the WRONG direction): the sand
-        // is NARROW right where it meets the road/dunes and FANS OUT into a wide
-        // mouth at the sea - real headlands are barely there at the inland neck
-        // and get wider and more dominant as you approach the coastline, staying
-        // wide (rocky points jutting into the water) at and beyond it. So cliff
-        // width is SMALLEST far inland and LARGEST right at and past the coastline.
-        const edgeDist = Math.min(i, GRID - 1 - i); // cells from the nearest real end
-        const distToCoast = coastT(i) - t; // >0 inland of the coastline, <=0 at/past it
-        const nearCoastT = THREE.MathUtils.clamp(1 - distToCoast / 0.5, 0, 1); // 0 = still far from the coast (narrow neck), 1 = at/past the coastline (wide headland)
-        // Reach capped at 8+60=68 cells used to mean almost the ENTIRE coastline
-        // (only ~4 of 140 cells stayed clear dead-centre) got some non-zero
-        // headland contribution right at its own coastline threshold - a small
-        // rock/hardness bump whose peak height only just happened to sit above
-        // or below the sand/rock colour threshold from one column to the next,
-        // which is exactly what read as a jagged, pointed "wizard hat" pinching
-        // the sand from both sides rather than a clean, wide-open bay middle.
-        // Real headlands are localised to the two actual rocky points - capped
-        // at 8+22=30 cells (~25m) leaves a genuinely headland-free ~65m-wide
-        // clean stretch across the middle of the bay.
-        const cliffWidthCells = 8 + 22 * Math.pow(nearCoastT, 1.25);
-        const cliffPotential = Math.pow(THREE.MathUtils.clamp(1 - edgeDist / cliffWidthCells, 0, 1), 1.6);
-        const cliffOnset = THREE.MathUtils.clamp((t - 0.20) / 0.14, 0, 1);
-        // The funnel taper above narrows the whole beach toward the sea - but the
-        // real river cuts its own gap straight through that narrowing (that's
-        // where the tidal creek visibly slices between the rocks in aerial
-        // photos), so the taper can't be allowed to close over the stream's own
-        // path the way it closes over everywhere else near the coast.
-        const streamGapDist = Math.abs(i - streamCenterX(z) / CELL);
-        const streamGapWidth = 7 + 6 * t;
-        const streamExemption = THREE.MathUtils.clamp(1 - streamGapDist / streamGapWidth, 0, 1);
-        // A real river doesn't cut a narrow slot through the tallest part of a
-        // cliff - it finds the lowest ground, because that's WHY the land is
-        // low there in the first place. This end of the bay (the stream sits
-        // close to i=GRID-1, the same end `edgeDist` already scores as the
-        // tallest cliff) was reading backwards from the real map/photos: the
-        // real headland by the stream mouth is gentle, low, open farmland -
-        // the dramatic rock is the OTHER headland, which has nothing to do
-        // with drainage. `streamExemption` above only ever cleared a ~10-cell
-        // channel-width gap through full-height cliff on both sides; this
-        // widens that into a genuine broad valley (~30 cells) so the whole
-        // neighbourhood of the stream reads as low ground, not just its exact
-        // centreline.
-        const streamValleyDist = streamGapDist;
-        const streamValleyWidth = 30;
-        const streamValleyT = THREE.MathUtils.clamp(1 - streamValleyDist / streamValleyWidth, 0, 1);
-        const streamValley = streamValleyT * streamValleyT * (3 - 2 * streamValleyT);
-        const headland = cliffPotential * cliffOnset * (1 - streamExemption * 0.92) * (1 - streamValley * 0.72);
-        // Checked against real elevation data (open-elevation.com samples around
-        // the actual headlands, cross-checked against a web search putting both
-        // Berryl's Point and Trenance Point at "over 50 metres"): the beach/dune
-        // area itself sits at only ~6-8m, and the headlands reach ~48-68m - a
-        // real height difference of ~45-60m, not the ~13m this constant gave.
-        // The simulated grid only covers the walkable NEAR side of each
-        // headland (the decorative skirt in environment.js continues rising
-        // beyond it toward the real summit), so it doesn't need to reach the
-        // full 50m+ by itself - raised enough that the two read as continuous
-        // rather than the skirt suddenly having to make up a huge, visible gap
-        // right at the seam.
-        hLand += headland * (19 + n1.fbm(i * 0.06, j * 0.06, 3) * 2.6) * Math.max(0.55, 1 - t * 0.18);
-
-        const coastline = coastT(i);
-        // Fine detail noise, larger inland (soft dune texture) smaller on the wide
-        // sand flats - and now explicitly faded out right at THIS column's own
-        // coastline (not a fixed t, since the coastline itself moves a lot per
-        // column). The old, slow high-exponent sea-edge curve used to absorb this
-        // kind of small bump without the visible boundary actually moving; the
-        // sharper blend below doesn't, so without this fade every dune ripple
-        // bled straight into the coastline as a jagged, comb-like edge.
-        const duneDetail = n1.fbm(i * 0.045, j * 0.045, 4) * (0.85 - 0.55 * Math.min(1, t * 1.8));
-        const coastFade = THREE.MathUtils.clamp((coastline - t) / 0.08, 0, 1);
-        hLand += duneDetail * (1 - Math.max(0, t - 0.5) * 1.6) * (1 - headland * 0.7) * coastFade;
-        // Small rock-pool style depressions on the mid/lower beach, relative to
-        // THIS column's own coastline rather than a fixed band (or a cove's
-        // narrower dry strip would get no pools, and a point's longer one would
-        // get pools well out past where the old fixed band ended).
-        const poolNoise = n3.fbm(i * 0.10 + 50, j * 0.10 + 50, 3);
-        if (t > 0.35 && t < coastline - 0.04) {
-          const dip = Math.max(0, poolNoise - 0.45) * 1.8 * (1 - headland);
-          hLand -= dip;
-        }
-
-        // Headlands are already their own explicit rock structure - don't let the
-        // sea blend eat into them just because a cove's coastline threshold
-        // happens to fall earlier at this same column. Width and slope both
-        // tuned for a gently-shelving beach, not a cliff: a narrow, steep version
-        // of this turned the whole coastline into a jagged little wall, because
-        // adjacent columns' drop-off points differ by a few metres (that's the
-        // whole point - it's what makes the coves and points) and a steep,
-        // narrow transition turns that natural difference into a visible ridge.
-        // A MODERATE headland value (e.g. 0.4, just past the cliff's own outer
-        // edge) was still suppressing the sea blend by a third, and because that
-        // suppression sits right at the blend's own sensitive transition zone, a
-        // small per-column change in headland was enough to snap the actual
-        // land/sea crossing point by dozens of cells - a visible seam right past
-        // every headland's edge (tried squaring headland here first - it only
-        // moved the same problem to a different column, since values near 1
-        // barely change under squaring while the ramp-up compresses). A smoothstep
-        // GATE instead means only a genuinely strong, deep-into-the-cliff
-        // headland (>0.5, ramping to full by 0.9) suppresses the blend at all;
-        // moderate values right at the cliff's outer edge get zero suppression,
-        // so the sea blend there behaves exactly like open coastline - no snap.
-        const seaEdgeWidth = 0.16;
-        const protT = THREE.MathUtils.clamp((headland - 0.5) / 0.4, 0, 1);
-        const seaProtection = protT * protT * (3 - 2 * protT); // smoothstep, written out (no MathUtils dependency)
-        const edge = THREE.MathUtils.clamp((t - coastline) / seaEdgeWidth, 0, 1) * (1 - seaProtection * 0.85);
-        const seaDepth = -2.2 - Math.max(0, t - coastline) * 2.2;
-        let h = hLand * (1 - edge) + seaDepth * edge;
-
-        this.bedrock[idx(i, j)] = h;
-
-        // Hardness: headlands + occasional outcrop noise = rock; dunes/beach = soft sand.
-        let hard = headland * 0.92;
-        const outcrop = n2.fbm(i * 0.08, j * 0.08, 3);
-        if (outcrop > 0.42) hard = Math.max(hard, (outcrop - 0.42) * 3.2 * (1 - headland * 0.3));
-        hard = Math.min(1, hard);
-        this.hardness[idx(i, j)] = hard;
-      }
+    for(let j=0;j<GRID;j++)for(let i=0;i<GRID;i++) {
+      const k=idx(i,j),x=i*CELL,z=j*CELL;
+      this.bedrock[k]=mawganHeight(x,z);
+      this.hardness[k]=mawganHardness(x,z);
     }
-
-    // Carve the stream channel into the heightfield.
-    for (let j = 0; j < GRID; j++) {
-      const z = j * CELL;
-      const cx = streamCenterX(z);
-      const ci = cx / CELL;
-      const t = z / SIZE;
-      const width = 2.4 + 2.4 * t; // widens into a natural mouth as it nears the sea
-      // Fade the carve out once this row is already past ITS OWN column's real
-      // coastline (t beyond coastT(i)) - found via the raw top-down data render
-      // (bypassing 3D lighting) as the exact source of a sharp, single-column
-      // "spike" of full-depth sea poking into the sand right at the creek mouth:
-      // the sea-depth blend above already carries every column below the
-      // -0.3 "deep sea" cutoff a few cells past its own coastline, so carving
-      // another 1.7m off a spot that's already "sea" punched a visibly deeper,
-      // narrower notch there than anywhere else along the same waterline - a
-      // real geometric artifact, not merely a symptom of the water shader (the
-      // user's reported wedge could well have BOTH causes; this is the terrain
-      // half). Only fades past this column's coastline - the actual channel bed
-      // everywhere upstream of it (dune line to coastline) is untouched, so the
-      // simulated creek's flow/erosion still sees the same carved bed it always did.
-      for (let i = 0; i < GRID; i++) {
-        const carveFade = 1 - THREE.MathUtils.clamp((t - coastT(i)) / 0.05, 0, 1);
-        const d = Math.abs(i - ci);
-        const carve = Math.exp(-Math.pow(d / width, 2)) * 1.7 * carveFade;
-        const k = idx(i, j);
-        this.bedrock[k] -= carve;
-        this.hardness[k] *= Math.max(0, 1 - carve * 1.5); // channel bed is soft
-      }
-    }
-
-    // The dune ridges can otherwise leave a hump in the streambed that water can
-    // never climb over. Force the channel centreline (and the band around it) to
-    // keep a gentle, monotonic downhill gradient from source to sea.
-    //
-    // ROOT CAUSE of a reported "tooth/staircase" pattern along the stream banks
-    // (confirmed live, tide-independent - present with the water mesh hidden
-    // entirely, at any tide level, wherever the current waterline happens to sit
-    // at the affected elevation): the original single-pass version below computed
-    // each row's required drop from only the IMMEDIATELY PRECEDING row's ceiling,
-    // then dumped the ENTIRE correction into that one row through the same narrow
-    // Gaussian falloff the regular channel carve uses. Wherever a real dune ridge
-    // crossed the channel steeply - confirmed live right at the stream's source,
-    // where the channel is at its narrowest (width ~2.4 cells) - that whole
-    // multi-metre correction landed on a single row instead of being spread over
-    // the many rows a real streambank would gradually descend across. Measured
-    // live: ~5m of height change compressed into ~1.2m of horizontal distance (a
-    // ~77 degree wall, only a handful of fine-mesh vertices wide) - far steeper
-    // than the fixed terrain mesh resolution can render as anything but a visible
-    // stair-step under raking light. The SAME Gaussian cross-section width also
-    // means a bigger single-row drop directly steepens that row's CROSS-CHANNEL
-    // slope too (a deeper carve at the same lateral width = a steeper wall) -
-    // which is exactly the "77 degree wall" being measured, not a separate effect.
-    //
-    // Fixed in three passes instead of one: first compute the exact same raw,
-    // unsmoothed per-row target this always has (into a scratch array, without
-    // touching the bedrock yet); then walk that array BACKWARD (sea toward
-    // source) capping how far any one row's target may sit above the NEXT (more
-    // seaward) row's already-finalised target - `MAX_DROP_PER_CELL` - pulling the
-    // earlier row down to compensate wherever the raw jump would exceed it; only
-    // then apply the (now gradual) result to the bedrock via the same Gaussian
-    // falloff as before. Since the backward pass only ever makes a row's target
-    // LOWER than the raw ratchet computed (never higher), it can't reintroduce a
-    // hump or weaken the "always strictly downhill" guarantee this whole pass
-    // exists for - it just spreads whatever single big drop the raw pass would
-    // have produced back over as many preceding rows as it takes to keep every
-    // step under the cap, so the SAME total elevation change happens over a much
-    // longer, gentler run instead of one near-vertical wall.
-    const MIN_DROP_PER_CELL = 0.006;
-    // Caps the steepest a forced correction may descend in a single row. 0.05m
-    // over one ~0.82m cell is a ~3.5 degree grade at the steepest single step -
-    // even a hump needing several metres removed now does it gradually over
-    // dozens of rows (tens of metres of actual channel length, invisible against
-    // the stream's full source-to-sea run) rather than one near-vertical wall.
-    const MAX_DROP_PER_CELL = 0.05;
-    const centerHRaw = new Float32Array(GRID);
-    const rawTarget = new Float32Array(GRID);
-    {
-      let ceiling = Infinity;
-      for (let j = 0; j < GRID; j++) {
-        const z = j * CELL;
-        const cx = streamCenterX(z);
-        const ci = cx / CELL;
-        const centerK = idx(Math.round(THREE.MathUtils.clamp(ci, 0, GRID - 1)), j);
-        const centerH = this.bedrock[centerK];
-        const target = Math.min(centerH, ceiling);
-        centerHRaw[j] = centerH;
-        rawTarget[j] = target;
-        ceiling = target - MIN_DROP_PER_CELL;
-      }
-    }
-    const smoothedTarget = new Float32Array(GRID);
-    smoothedTarget[GRID - 1] = rawTarget[GRID - 1];
-    for (let j = GRID - 2; j >= 0; j--) {
-      smoothedTarget[j] = Math.min(rawTarget[j], smoothedTarget[j + 1] + MAX_DROP_PER_CELL);
-    }
-    // Spreading the drop over more ROWS (above) only fixes the ALONG-channel
-    // slope. Measured live it wasn't enough on its own: the CROSS-channel slope
-    // (within a single row) was still ~80 degrees at a row where the centreline
-    // itself now descends perfectly smoothly - because that slope is just
-    // (how much depth needs removing here) / (the fixed carve width), and the
-    // width this correction used was always the same narrow base channel width
-    // regardless of how much depth it had to remove. A big correction and a
-    // small one were being crammed through the identical lateral footprint, so
-    // the big one was inevitably steeper. Widening the falloff in proportion to
-    // the drop keeps the resulting slope roughly constant instead of growing
-    // with depth - `1.5` is chosen so a drop as big as the base width itself
-    // still resolves to close to the SAME cross-section slope the regular,
-    // un-corrected channel carve already has everywhere else (so a corrected
-    // stretch reads as "normal streambank", not "unusually wide" or "unusually
-    // steep" relative to the rest of the channel).
-    for (let j = 0; j < GRID; j++) {
-      const drop = centerHRaw[j] - smoothedTarget[j];
-      if (drop <= 1e-6) continue;
-      const z = j * CELL;
-      const cx = streamCenterX(z);
-      const ci = cx / CELL;
-      const width = Math.max(2.4 + 2.4 * (z / SIZE), drop * 1.5);
-      const i0 = Math.max(0, Math.floor(ci - width * 1.8));
-      const i1 = Math.min(GRID - 1, Math.ceil(ci + width * 1.8));
-      for (let i = i0; i <= i1; i++) {
-        const d = Math.abs(i - ci);
-        const falloff = Math.exp(-Math.pow(d / width, 2));
-        this.bedrock[idx(i, j)] -= drop * falloff;
-      }
-    }
-
-    // The two passes above fix the ALONG-channel slope (row to row) and widen
-    // the falloff in proportion to how big a correction THEY make - but measured
-    // live, a steep CROSS-channel wall could still remain even at a row needing
-    // almost no correction from either pass: the channel's fixed-width, fixed-
-    // amplitude carve cuts through whatever natural dune/ridge terrain happens
-    // to sit there, and wherever that surrounding ridge is unusually tall right
-    // at the channel (a real, ordinary feature of the noise-based terrain, nothing
-    // "wrong" with it on its own), the SAME narrow carve width produces a much
-    // steeper bank than it does through ordinary, lower terrain nearby - confirmed
-    // live at exactly such a spot: a ~76 degree cross-section where the centreline
-    // itself was already perfectly smooth row-to-row, so neither pass above had
-    // any reason to widen anything there.
-    //
-    // Rather than guess at which upstream cause produced a given steep bank, cap
-    // the actual RESULTING cross-slope directly, symmetrically outward from the
-    // centreline on each side, right after every other height-affecting pass
-    // above has already run - this catches a steep wall regardless of whether it
-    // came from the main carve, the ratchet correction, or the surrounding
-    // terrain's own noise, without needing to special-case any of them. Chosen to
-    // match (not tighten) the SAME slope the un-corrected channel carve already
-    // produces everywhere else (~35-36 degrees, i.e. roughly 1 vertical to 1.4
-    // horizontal) - a stretch this pass touches should read as an ordinary
-    // streambank, not a visibly different (unusually gentle OR unusually wide)
-    // one. Only ever lowers terrain (consistent with every other carving pass
-    // here), so it can't reintroduce a hump.
-    const MAX_CROSS_SLOPE = 0.7; // metres of height per metre of horizontal distance
-    const maxStepPerCell = MAX_CROSS_SLOPE * CELL;
-    for (let j = 0; j < GRID; j++) {
-      const z = j * CELL;
-      const cx = streamCenterX(z);
-      const ci = Math.round(THREE.MathUtils.clamp(cx / CELL, 0, GRID - 1));
-      const width = 2.4 + 2.4 * (z / SIZE);
-      // Wide enough to reach past any bank this could plausibly have created,
-      // narrow enough to never touch unrelated dune terrain far from the channel.
-      const reach = Math.ceil(width * 4);
-      // Walk outward from the centreline in both directions, capping each next
-      // cell's height at (previous cell's, already-capped, height + max step) -
-      // this can only ever pull a too-tall cell DOWN to the cap, never raise one.
-      let prev = this.bedrock[idx(ci, j)];
-      for (let i = ci + 1; i <= Math.min(GRID - 1, ci + reach); i++) {
-        const k = idx(i, j);
-        if (this.bedrock[k] > prev + maxStepPerCell) this.bedrock[k] = prev + maxStepPerCell;
-        prev = this.bedrock[k];
-      }
-      prev = this.bedrock[idx(ci, j)];
-      for (let i = ci - 1; i >= Math.max(0, ci - reach); i--) {
-        const k = idx(i, j);
-        if (this.bedrock[k] > prev + maxStepPerCell) this.bedrock[k] = prev + maxStepPerCell;
-        prev = this.bedrock[k];
-      }
-    }
-
-    // Steep ground exposes bare rock regardless of the headland mask's own falloff -
-    // this is what actually makes a cliff FACE read as rock instead of the softer
-    // colouring the plateau-shaped mask alone would give it right at the drop.
-    // Excludes the stream channel itself: its banks are steep by construction but
-    // should stay sandy, not read as a rock canyon. Also excludes each column's
-    // own coastal shelf (the sea-edge blend in the main loop above) - that slope
-    // is a deliberately gentle, natural beach gradient, not a cliff, but without
-    // this exclusion this pass darkened the ENTIRE coastline into jagged-looking
-    // bare rock, because a real bay's coastline curves in and out (coves and
-    // points), and this measures slope from local height differences - so it
-    // read every bend in that curve as if it were a small cliff.
-    for (let j = 1; j < GRID - 1; j++) {
-      const z = j * CELL;
-      const t = z / SIZE;
-      const streamI = streamCenterX(z) / CELL;
-      const streamWidth = (2.4 + 2.4 * (z / SIZE)) * 2.2;
-      for (let i = 1; i < GRID - 1; i++) {
-        if (Math.abs(i - streamI) < streamWidth) continue;
-        if (t > coastT(i) - 0.22) continue;
-        const k = idx(i, j);
-        const hL = this.bedrock[idx(i - 1, j)], hR = this.bedrock[idx(i + 1, j)];
-        const hD = this.bedrock[idx(i, j - 1)], hU = this.bedrock[idx(i, j + 1)];
-        const slope = (Math.abs(hR - hL) + Math.abs(hU - hD)) / (4 * CELL);
-        this.hardness[k] = Math.max(this.hardness[k], Math.min(1, slope * 1.4));
-      }
-    }
-
-    this.bedrock.set(this.bedrock); // no-op, keeps intent clear
     this.height.set(this.bedrock);
   }
 
@@ -1243,116 +747,10 @@ export class Terrain {
     out.copy(base);
   }
 
-  _colorAtLevel1(fi, fj, h, slope, hardness, wet, disturbance, cavity, out) {
-    const P = this._pal;
-    const fx = fi / RENDER_SUBDIV, fz = fj / RENDER_SUBDIV;
-    const t = (fj * FINE_CELL) / SIZE;
-
-    // Warm/cool grass variation: real coastal turf is never one flat green - it
-    // mottles between a cooler, shaded green and a warm, sun-bleached almost-golden
-    // tone. Driven by its own noise field (independent of the coverage masks below)
-    // so the warm/cool mix reads as natural patchiness, not banding tied to where
-    // the grass itself is placed.
-    const grassWarmth = THREE.MathUtils.clamp((n2.fbm(fx * 0.11 + 700, fz * 0.11 + 700, 3) - 0.1) * 1.5, 0, 1);
-    const grassTone = this._cGrass.copy(P.grass).lerp(P.grassWarm, grassWarmth);
-
-    const base = this._cBase.copy(P.sand).lerp(grassTone, THREE.MathUtils.clamp((0.22 - t) * 3.2, 0, 1) * 0.85);
-    base.lerp(P.dryGrass, 0.15 * Math.max(0, 1 - t * 3));
-
-    // The two headlands are NOT symmetric in reality, but not for the reason
-    // first assumed here: a real river finds the LOWEST ground, it doesn't cut
-    // a narrow gap through the tallest cliff - the land is low and gentle right
-    // around the stream's mouth precisely BECAUSE that's where it drains. The
-    // dramatic dark, jagged, fractured rock cliff is the OTHER headland, well
-    // clear of the stream, unrelated to drainage. This was tied to absolute
-    // north/south position before (assuming the stream's own end was the rocky
-    // one), which is exactly backwards - now tied to actual distance from the
-    // stream's real path. The hardness field itself (headland + outcrop +
-    // slope-exposure, all baked together in _generate()) stays untouched here -
-    // that field also feeds water.js's erosion/flux - this only biases how much
-    // of that hardness actually SHOWS as bare rock vs. how far grass is allowed
-    // to creep down the slope, purely a display decision. rockAllow: low near
-    // the stream (most would-be rock repainted as grass below), 1.0 well clear
-    // of it (full rock, unchanged).
-    const distFromStreamHere = Math.abs(fx * CELL - streamCenterX(fz * CELL));
-    const nearStreamT = THREE.MathUtils.clamp(1 - distFromStreamHere / 34, 0, 1);
-    const nearStreamSmooth = nearStreamT * nearStreamT * (3 - 2 * nearStreamT);
-    const rockAllow = 0.22 + 0.78 * (1 - nearStreamSmooth);
-    const southGrassBoost = 1 - rockAllow; // how much extra grass-friendliness the low ground near the stream gets
-
-    const grassPatch = THREE.MathUtils.clamp((n1.fbm(fx * 0.15 + 300, fz * 0.15 + 300, 3) - 0.1) * 2.4, 0, 1);
-    const clifftopHeightThresh = 4.5 - 3.2 * southGrassBoost; // grass starts much lower up the south hill
-    const clifftopSlopeTol = 2.6 - 1.9 * southGrassBoost;     // and tolerates a steeper slope there too
-    const clifftopGrass = THREE.MathUtils.clamp((h - clifftopHeightThresh) / 3.5, 0, 1)
-      * THREE.MathUtils.clamp(1 - slope * clifftopSlopeTol, 0, 1) * grassPatch;
-    base.lerp(grassTone, clifftopGrass * 0.9);
-
-    const rockExposure = THREE.MathUtils.clamp(hardness * (0.2 + slope * 1.8), 0, 1) * rockAllow;
-    const rockHeightT = THREE.MathUtils.clamp((h - 2) / 9, 0, 1);
-    const rockTone = this._cTone.copy(P.rockMid).lerp(P.rockLight, rockHeightT * 0.8).lerp(P.rockDark, (1 - rockHeightT) * 0.5);
-    // Rock exposed low down, where `wet` (the water sim's own moisture field) runs
-    // high, reads as genuinely dark, wet slate - not the same flat brown-grey as
-    // the dry rock higher up the cliff face.
-    rockTone.lerp(P.rockDark, THREE.MathUtils.clamp(wet * 1.3, 0, 1) * 0.45);
-    base.lerp(rockTone, rockExposure);
-    if (rockExposure > 0.15) {
-      // Fine, closely-spaced diagonal strata - real sedimentary slate here reads
-      // as thin, tightly-packed layering (like a stack of paper), not big,
-      // widely-spaced alternating blobs - the old 0.32/2.6 frequency was low
-      // enough to read as a handful of fat bands per cliff face rather than
-      // dozens of thin ones, a real and specific mismatch against the photos.
-      //
-      // CAUGHT AND FIXED (verified with shadows forced off, so it wasn't
-      // shadow acne): pushing the HEIGHT term's coefficient up to match (7.5,
-      // scaling with x's 0.95) aliased into an ugly regular checkerboard on
-      // any near-vertical cliff face - a steep slope can change many metres of
-      // height over one ~0.2m fine-mesh vertex step, so a phase term that
-      // multiplies raw height by anything large enough to matter completes
-      // several full sine cycles between adjacent vertices, which is
-      // undersampling/moire, not banding. The x term alone (well resolved,
-      // since x changes slowly and smoothly per vertex regardless of slope)
-      // already gives the fine, closely-spaced look; height's coefficient is
-      // kept small here so it only adds a gentle diagonal tilt, never enough
-      // cycles-per-vertex to alias even on a sheer face.
-      const strataPhase = fi * FINE_CELL * 0.95 + h * 1.7;
-      const strata = Math.sin(strataPhase) * 0.5 + 0.5;
-      base.lerp(P.rockDark, strata * 0.4 * rockExposure);
-      // Alternate bands lighten toward the dry, higher-up rock tone instead of
-      // every band only ever darkening - real sedimentary strata reads as
-      // alternating light/dark banding, not a one-directional smudge. Gated by
-      // rockHeightT so this light band only shows through on the drier rock
-      // higher up; wet rock near the waterline stays uniformly dark.
-      base.lerp(P.rockLight, (1 - strata) * 0.18 * rockExposure * rockHeightT);
-      // The fine secondary layer needs its OWN higher x-frequency, not the
-      // whole phase (x term AND height term together) multiplied up - doing
-      // that to the height term is exactly what caused the aliasing above,
-      // just at 3.4x the severity.
-      const fineStrataPhase = fi * FINE_CELL * 3.4 + h * 2.3 + 1.4;
-      const fineStrata = Math.sin(fineStrataPhase) * 0.5 + 0.5;
-      base.lerp(P.rockDark, fineStrata * 0.16 * rockExposure);
-    }
-    base.lerp(P.rockDark, THREE.MathUtils.clamp((slope - 0.45) * 1.0, 0, 1) * 0.78 * rockAllow);
-
-    const wetT = THREE.MathUtils.clamp(wet, 0, 1);
-    base.lerp(P.wetSand, wetT * 0.85);
-    base.lerp(P.mud, wetT * wetT * 0.55);
-
-    // Dug basins (cavity > 0) read as a distinctly darker, damp "just turned"
-    // tone; piled rims (cavity < 0) read lighter/drier - stronger than the old
-    // single shared "disturbed" tint so a hole and its spoil heap read as visually
-    // different things, the way real turned sand actually does.
-    const distT = THREE.MathUtils.clamp(disturbance, 0, 1);
-    if (cavity > 0) base.lerp(P.turnedSandDug, distT * 0.8);
-    else base.lerp(P.turnedSand, distT * 0.75);
-
-    // Moderated from an earlier pass that clamped cavity up to 1.3 and darkened by
-    // up to 0.62 - combined with turnedSandDug that read as a near-black void
-    // rather than a shadowed damp basin. Still a strong, unambiguous "this is a
-    // hole" cue (verified in-browser - see deployment notes), just not literally black.
-    if (cavity > 0) base.multiplyScalar(1 - Math.min(1, cavity) * 0.5);
-    else base.multiplyScalar(1 - cavity * 0.24); // rims catch noticeably more light
-
-    out.copy(base);
+  _colorAtLevel1(fi,fj,h,slope,hardness,wet,disturbance,cavity,out) {
+    const c=mawganColour(fi*FINE_CELL,fj*FINE_CELL,h,slope,wet,disturbance);
+    out.setRGB(c[0],c[1],c[2]);
+    out.multiplyScalar(1-Math.min(.22,Math.max(0,cavity)*.2));
   }
 
   // Recomputes height, normals and vertex colour for every fine vertex covering

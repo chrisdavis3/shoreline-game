@@ -1,6 +1,53 @@
 # Shoreline quality audit
 
-Updated 17 September 2026. This is a working backlog, not a claim that the requested visual standard has been reached.
+Updated 14 November 2026. This is a working backlog, not a claim that the requested visual standard has been reached.
+
+## Reference-fidelity audit — 14 November 2026
+
+The user reiterated that the game must look like the destination, and that supplied reference images were insufficiently followed. Geographic fidelity comes before material polish. A technically improved generic beach does not satisfy this brief.
+
+Recovered and visually inspected from the original Claude history:
+
+- The user's 12 September PowerPoint comparison: satellite/map view beside game screenshots, with a red correction to the inland outline. This is direct evidence of the requested spatial relationships and the rejected rectangular/triangular interpretation.
+- The accompanying coastal photo board: dark exposed rock, grassy headland tops, irregular cliff silhouettes, pale buildings distributed through the landscape, and natural surf. Individual photographs must be located before treating their geometry as an exact survey of Mawgan Porth; use the map for layout and the photos for supported views/materials.
+- The user's level-two sketch: upper lake feeding a waterfall, a receiving pool, and a river through several lower terraces. Later comments require connected accessible ground beside the upper lake, without the unintended intervening canyon.
+
+The recovered files and a provenance index are retained locally in `../outputs/shoreline-reference-audit/`. They are audit evidence, not runtime assets; do not publish the conversation archive or assume image redistribution rights.
+
+Pre-release-112 source findings (retained as the reason for rebuilding):
+
+- `src/terrain.js`, `coastTContinuousLevel1`: the coast uses a sine-derived crescent plus noise, not a calibrated trace of the reference outline.
+- `src/terrain.js`, `streamCenterXLevel1`: a sinusoidal/noise path is based at 78% of the grid width. Comments explicitly explain a displacement away from the researched mouth position to accommodate the taper algorithm. That is an implementation compromise, not evidence of geographic fidelity; the comments' geographic claims require independent verification before reconstruction.
+- `src/village.js`, `buildCoastalVillage`: 24 cottages are placed by a seeded random sampler within a rectangular area, with slope/spacing exclusions. Architectural details exist, but placement does not encode the reference village's roads, clusters or relationship to the bay.
+- Reference-driven palette and headland adjustments exist. They do not demonstrate that the overall destination has been reproduced.
+
+Acceptance requirements for a visual rebuild:
+
+1. Establish one consistent map orientation, scale and reference extent. Label the beach perimeter, both headlands, stream approach/mouth, low inland opening, village clusters and roads. Compare outlines in a common top-down view; do not infer compass directions from a rotated screenshot.
+2. Fit the terrain and village composition to those landmarks. Any scale compression needed for play must preserve their spatial relationships and be documented. The simulation grid may remain rectangular internally without dictating the visible footprint.
+3. Compare a plain, untextured model against the map and matching photographic viewpoints before adding fine materials. Tide level and camera perspective must be accounted for when comparing waterlines.
+4. Add locally appropriate cliff forms, turf, wet/dry sand and architecture after the large shapes agree. Generic repository presets are techniques to adapt, not the destination design.
+5. Retain fixed reference/game comparison views (overview, beach toward village, and headland across bay). Passing physics tests, adding detail or fixing an isolated defect cannot count as passing visual fidelity. Repeat the comparisons after erosion/digging and check performance on the intended devices.
+
+That initial audit changed no runtime code. The rebuild and checks below followed the user's instruction to fix it.
+
+## Release 112: reference-led beach rebuild
+
+- Recovered the original annotated aerial and coastal photo board before rebuilding. North/south orientation was checked against Making Space for Sand; the Menalhyl follows the southern margin. See `REFERENCE_SOURCES.md` for the map transform, sources, licence and limits.
+- Replaced the warped rectangular beach and enclosing skirt with an asymmetric bay, low inland approach, grassy slate headlands and continuous hinterland. Both physical ground and its continuation use one height profile. Removed the invented sea arch.
+- Added mapped road/path routes and building sites from OpenStreetMap. The unmodified-terrain test places 129 separated cottages in 11 material batches; actual placements depend on restored terrain. Projected road shading follows erosion without floating/intersecting ribbon meshes. Building elevations, details and garden vegetation are authored.
+- Added GPU material grain, rock bedding, wet-sand response and coordinated shallow/outer sea shading. The hydraulic model remains 140 x 140. Terrain render triangles reduced from 618,272 to 347,778 (43.75%); this is a mesh reduction, not a measured mobile frame-rate claim.
+- Added a whole-bay Overview/Explore toggle on desktop and narrow screens. Refined cliff/building proportions and coastal lighting against the references.
+- New beach terrain version 8 writes its own save slot. Legacy beach earthworks remain in the original slot and are also backed up when storage permits. They cannot be applied directly to the rebuilt landscape. Gorge/mill terrain versions remain 9/10.
+
+Validation:
+
+- Full six-file regression suite passes: mill diversion/pump power and stagnant water, earth conservation, village placement, cave movement/trigger bounds, complete incremental terrain refresh, scenery anchoring, new bay spatial checks, two minutes of river flow, old-save preservation and edited-height save/reload equality.
+- Headless Chrome at 1440 x 1000 and touch layout 390 x 844: play and whole-bay screenshots inspected; Overview and Controls work; no logged script/shader errors. This is desktop browser/phone-layout testing, not an actual iPhone performance pass.
+- Actual keyboard input moves the player. Touch DIG events execute three scoops and alter terrain. Browser save/reload succeeds. The village prompt enters the gorge; cave passage enters the mill. Entry positions were set through QA controls, so these are transition checks, not a full manual traversal.
+- Source syntax and whitespace checks pass. Evidence stays outside the public source under `../outputs/shoreline-reference-audit/`.
+
+Useful upstream references checked for future rendering work: [Three.js Water2](https://github.com/mrdoob/three.js/blob/master/examples/jsm/objects/Water2.js) for flow-map water shading, and [THREE-CustomShaderMaterial](https://github.com/FarazzShaikh/THREE-CustomShaderMaterial) for extending standard lit materials. Neither is an added dependency in this release; neither supplies Mawgan Porth geography.
 
 ## Non-negotiable brief
 
@@ -42,7 +89,7 @@ Updated 17 September 2026. This is a working backlog, not a claim that the reque
 
 ## Open priorities
 
-1. Beach scenery: cottages now have architectural detail, but their arrangement needs lanes, gardens and a better relationship to the actual village; background cliff polygons remain conspicuous. The landscape still lacks the real place's architectural and geological detail. Improve based on actual references and compare broad views, not just the player's immediate surroundings.
+1. Beach fidelity: release 112 replaces the old warped footprint and random village with explicit bay/headland profiles and mapped roads/building positions. Architectural details and elevations remain authored; cliff silhouettes/materials and distant land detail still need refinement against located photographic viewpoints. Do not describe this as a surveyed or photorealistic reconstruction.
 2. Banks: the regular comb pattern is fixed in release 110. Continue checking bank shapes and water intersections under player digging and long erosion runs; the source channel is still too uniform.
 3. River decoration: release 111 re-anchors beach pebbles/driftwood and suppresses flooded or disturbed grass. Gorge decorations still need the same review; real mobile performance remains unmeasured.
 4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the concealed cave. The core mill test does not cover this level.
