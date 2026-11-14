@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>Shoreline</title>
 <link rel="icon" href="data:,">
 <style>
@@ -171,7 +171,7 @@
   #zoomBtns { display: flex; gap: 8px; }
   #zoomBtns .tbtn { width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 18px; border-radius: 50%; }
 </style>
-<link rel="stylesheet" href="./src/interface.css?v=112" />
+<link rel="stylesheet" href="./src/interface.css?v=113" />
 </head>
 <body>
 <div id="app"></div>
@@ -227,7 +227,7 @@
 
 <button id="sound">Sound: on</button>
 
-<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="position:fixed;bottom:8px;right:16px;font:9px sans-serif;color:#d8e5df;z-index:5">Map data © OpenStreetMap contributors</a>
+<div id="dataCredit"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">Map &copy; OpenStreetMap</a> &middot; <a href="https://www.data.gov.uk/dataset/01b3ee39-da3f-47b6-83da-dc98e73a461f/lidar-composite-digital-terrain-model-dtm-1m" target="_blank" rel="noopener">Terrain &copy; Environment Agency</a></div>
 <button id="resetBtn">Reset beach</button>
 <button id="levelBtn">Change level</button>
 
@@ -271,7 +271,7 @@
   localStorage.setItem('shoreline_active_level', level);
   var s = document.createElement('script');
   s.type = 'module';
-  s.src = './src/main.js?v=112';
+  s.src = './src/main.js?v=113';
   document.body.appendChild(s);
 })();
 </script>

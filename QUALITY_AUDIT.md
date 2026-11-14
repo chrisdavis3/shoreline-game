@@ -31,6 +31,19 @@ Acceptance requirements for a visual rebuild:
 
 That initial audit changed no runtime code. The rebuild and checks below followed the user's instruction to fix it.
 
+## Release 113: bridge, measured hills and touch play
+
+- Replaced authored hill heights with Environment Agency LiDAR ground data, resampled from a public 3m extract. Roads, river and terrain share one coordinate transform; see `REFERENCE_SOURCES.md` for datum, compression, licences and limits. The village now sits on the measured Trenance/Trevarrian slopes.
+- Added the mapped B3276 bridge, continuous walking ramps, stone parapets and an open waterway beneath it. Moved the river to its mapped crossing. Excluded approximate house footprints and random boulders from roads.
+- Stitched the distant landscape to every detailed terrain-edge vertex and update that join after terrain changes. This removes the open cracks where coarse headland triangles previously met the finer playable ground.
+- Kept automatic river top-up within its bed, reduced source inflow to suit the narrower valley, and made inland turf firmer. The original flow settings flooded the village approach in the new terrain; regression coverage checks the banks as well as channel continuity.
+- Disabled page double-tap/gesture zoom on the game surface. Pointer capture keeps Dig/Sprint held when a thumb drifts; release, cancellation and interruption clear held actions. The game zoom controls remain available.
+- Removed camera-heading feedback that curved a held joystick direction. Lowered the phone camera, moved the shovel target closer, added a ground aim ring, made the first scoop immediate, and enabled slow walking while digging. The dig animation timer now advances instead of restarting every frame.
+- Revised the child's proportions, fringe, hood and striped shorts from the relayed description. The latest photograph is inaccessible here, so likeness remains unverified. No child photo is included in source or runtime assets.
+- Beach terrain version 9 has a new save slot. Version 8 earthworks remain in their original slot; old terrain cannot be overlaid on the measured landscape. Gorge/mill terrain versions stay 9/10.
+
+Validation uses the six-file physics/regression suite plus native Chromium touch input in `tests/touch.browser.cjs`: sustained joystick movement, independent camera drag, simultaneous walking/digging, thumb drift, touch cancellation, repeated taps, in-game zoom and a full-loop bridge crossing. Ten UI-driven scoops produce a hole and spoil. This is browser touch testing, not a physical iPhone/Safari performance pass. The child photo likeness, exact building architecture and a complete manual playthrough remain unverified.
+
 ## Release 112: reference-led beach rebuild
 
 - Recovered the original annotated aerial and coastal photo board before rebuilding. North/south orientation was checked against Making Space for Sand; the Menalhyl follows the southern margin. See `REFERENCE_SOURCES.md` for the map transform, sources, licence and limits.
@@ -89,7 +102,7 @@ Useful upstream references checked for future rendering work: [Three.js Water2](
 
 ## Open priorities
 
-1. Beach fidelity: release 112 replaces the old warped footprint and random village with explicit bay/headland profiles and mapped roads/building positions. Architectural details and elevations remain authored; cliff silhouettes/materials and distant land detail still need refinement against located photographic viewpoints. Do not describe this as a surveyed or photorealistic reconstruction.
+1. Beach fidelity: release 113 uses measured LiDAR elevations and mapped bridge, roads and building sites. Architecture and fine surface detail remain stylised; refine them against located photographic viewpoints. The riverbed, tide and horizontal/vertical scales are adapted for play. Do not describe this as a photorealistic reconstruction.
 2. Banks: the regular comb pattern is fixed in release 110. Continue checking bank shapes and water intersections under player digging and long erosion runs; the source channel is still too uniform.
 3. River decoration: release 111 re-anchors beach pebbles/driftwood and suppresses flooded or disturbed grass. Gorge decorations still need the same review; real mobile performance remains unmeasured.
 4. Gorge: visually inspect the revised upper plateau, lake outlet and entire on-foot/vehicle access route, including the concealed cave. The core mill test does not cover this level.

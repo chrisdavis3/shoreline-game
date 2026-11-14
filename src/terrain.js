@@ -1,7 +1,7 @@
-import { mawganHeight, mawganHardness, mawganStream, mawganColour } from './mawgan.js?v=112';
-import { coastalMaterial } from './coastal-material.js?v=112';
+import { mawganHeight, mawganHardness, mawganStream, mawganColour } from './mawgan.js?v=113';
+import { coastalMaterial } from './coastal-material.js?v=113';
 import * as THREE from '../vendor/three.module.js';
-import { Noise2D } from './noise.js?v=112';
+import { Noise2D } from './noise.js?v=113';
 import { millHeight, bypassX } from './mill-layout.js';
 
 // Grid-based terrain heightfield shared by rendering, water sim, and rocks.
@@ -19,7 +19,7 @@ import { millHeight, bypassX } from './mill-layout.js';
 // height array (old falls position, no lake) was overwriting the new
 // generation, while everything else (the cascade mesh, water source) used
 // the new constants.
-export const TERRAIN_VERSION = 8;
+export const TERRAIN_VERSION = 9;
 export const terrainVersionFor = level => level === 'level2' ? 9 : level === 'level3' ? 10 : TERRAIN_VERSION;
 export const GRID = 140;          // cells per side
 export const CELL = 0.82;         // metres per cell

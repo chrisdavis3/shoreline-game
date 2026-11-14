@@ -58,3 +58,12 @@ dialog h2 { font:normal 34px Georgia,serif;margin:10px 0 22px; }
   dialog {padding:24px 20px;} dialog h2 {font-size:28px;}
 }
 @media(prefers-reduced-motion:reduce) { * {scroll-behavior:auto!important;animation:none!important;transition:none!important;} }
+
+/* Game gestures belong to the camera/controls, never page zoom or scrolling. */
+html,body {touch-action:none;overscroll-behavior:none;-webkit-text-size-adjust:100%;}
+#touchUI,#fieldTools,#fieldTools button,.tbtn,#resetBtn,#sound,#levelBtn {touch-action:none;}
+#joystickZone {height:48%;width:46%;}
+#joystickZone::before {content:"MOVE";position:absolute;left:26px;bottom:95px;width:86px;height:86px;border:1px solid #d5e1d63b;border-radius:50%;display:grid;place-items:center;font-size:10px;letter-spacing:.14em;color:#ecf3e880;pointer-events:none;}
+body.touch #hint {box-sizing:border-box;width:145px;bottom:52px;left:140px;padding:7px 10px;font-size:10px;line-height:1.4;}
+#dataCredit {position:fixed;bottom:4px;right:14px;z-index:10;font-size:8px;color:#ecf3e8;}
+#dataCredit a {color:inherit;}

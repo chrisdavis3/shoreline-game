@@ -1,7 +1,8 @@
-import { mappedBuildings } from './mawgan-map.js?v=112';
-import { landscapeHeight } from './mawgan-surround.js?v=112';
+import { mappedBuildings } from './mawgan-map.js?v=113';
+import {roadOverlapsFootprint} from './mawgan-roads.js?v=113';
+import { landscapeHeight } from './mawgan-surround.js?v=113';
 import * as THREE from '../vendor/three.module.js';
-import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=112';
+import {CELL, idx, streamCenterX, warpX} from './terrain.js?v=113';
 
 // Static architecture is merged by material after placement. Detail should not
 // turn a small village into hundreds of separate draw calls on a phone.
@@ -53,11 +54,12 @@ export function buildCoastalVillage(terrain) {
     const mesh=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);
     mesh.position.set(x,y,z);mesh.rotation.z=rotation;parent.add(mesh);return mesh;
   }
-  const sites=[...mappedBuildings].sort((a,b)=>Math.hypot(a.x-92,a.z-8)-Math.hypot(b.x-92,b.z-8));
+  const sites=[...mappedBuildings].sort((a,b)=>Math.hypot(a.x-80,a.z-12)-Math.hypot(b.x-80,b.z-12));
   for (const site of sites) {
     const {x,z}=site;
     const w=Math.max(1.35,Math.min(12,site.w)),d=Math.max(1.35,Math.min(12,site.d));
     const rotation=site.rotation;
+    if(roadOverlapsFootprint(x,z,w+.2,d+.2,rotation))continue;
     const radius=Math.hypot(w,d)/2;
     if(Math.abs(x-streamCenterX(z))<radius+3.2)continue;
     if(terrain.blocked[idx(Math.round(x/CELL),Math.round(z/CELL))])continue;
@@ -69,7 +71,7 @@ export function buildCoastalVillage(terrain) {
       corners.push(landscapeHeight(terrain,wx,wz));
     }
     const low=Math.min(...corners), high=Math.max(...corners);
-    if(high-low>2.5 || low<2.6)continue;
+    if(high-low>2.5 || low<.75)continue;
     // Foundations descend into the slope; the walls begin above the highest
     // corner. Averaging corner heights left half the old houses floating.
     const y=high+.06, plinthHeight=high-low+.25;

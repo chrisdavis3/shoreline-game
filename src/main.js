@@ -1,24 +1,26 @@
-import {buildCoastalOcean} from './coastal-ocean.js?v=112';
-import {buildMawganSurround} from './mawgan-surround.js?v=112';
+import {buildCoastalOcean} from './coastal-ocean.js?v=113';
+import {buildMawganSurround} from './mawgan-surround.js?v=113';
+import {buildMawganBridge} from './mawgan-bridge.js?v=113';
+import {installGameTouchPolicy,bindPointerHold} from './touch-input.js?v=113';
 import * as THREE from '../vendor/three.module.js';
 import {
   Terrain, SIZE, GRID, CELL, streamCenterX, idx,
   setActiveLevel, L2_LIP_X, L2_T_FALL1,
-} from './terrain.js?v=112';
-import { WaterSim } from './water.js?v=112';
+} from './terrain.js?v=113';
+import { WaterSim } from './water.js?v=113';
 import {
   buildSky, scatterProps, buildBirds, buildVillage,
   buildSkirtLevel2, scatterPropsLevel2, buildWaterfallCascade,
-} from './environment.js?v=112';
-import { scatterRocks, Rock } from './rocks.js?v=112';
-import { Player } from './player.js?v=112';
-import { AudioSystem } from './audio.js?v=112';
-import { Particles } from './particles.js?v=112';
-import { Debris } from './debris.js?v=112';
-import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=112';
-import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=112';
-import { buildMillValley } from './mill.js?v=112';
-import { Bulldozer, Excavator } from './vehicles.js?v=112';
+} from './environment.js?v=113';
+import { scatterRocks, Rock } from './rocks.js?v=113';
+import { Player } from './player.js?v=113';
+import { AudioSystem } from './audio.js?v=113';
+import { Particles } from './particles.js?v=113';
+import { Debris } from './debris.js?v=113';
+import { saveState, loadSavedData, applySavedData, clearSave } from './save.js?v=113';
+import { buildHiddenCave, insideCave, reachedCavePassage, CAVE_X, CAVE_BACK, CAVE_MOUTH } from './hidden-cave.js?v=113';
+import { buildMillValley } from './mill.js?v=113';
+import { Bulldozer, Excavator } from './vehicles.js?v=113';
 
 // ---------- level selection ----------
 // index.html/artifact.html's inline bootstrap script picks a level (a simple
@@ -38,7 +40,7 @@ setActiveLevel(ACTIVE_LEVEL_ID);
 // tab ever picks up a fix is to actually reload. Checked whenever the tab
 // becomes visible again (see checkForUpdate below), which is exactly when a
 // player is starting a new session anyway, not interrupting one mid-action.
-const APP_VERSION = 112;
+const APP_VERSION = 113;
 
 // ---------- renderer / scene / camera ----------
 
@@ -189,7 +191,7 @@ scene.add(player.mesh);
 if (savedData) player.setSpawn(savedData.playerX, savedData.playerZ);
 else if (ACTIVE_LEVEL_ID === 'level3') player.setSpawn(76, 60);
 else if (ACTIVE_LEVEL_ID === 'level2') player.setSpawn(L2_LIP_X + 7, (L2_T_FALL1 + .045) * SIZE); // just below the falls' landing pool
-else player.setSpawn(92, 32);
+else player.setSpawn(75, 28);
 
 const particles = new Particles(scene, 320);
 const debris = new Debris(scene, terrain, water);
@@ -234,6 +236,8 @@ let beachScenery = null;
 let villageDoor = null;
 let mill = null;
 let waterfallCave = null;
+let roadBridge = null;
+let coastalSurround = null;
 if (ACTIVE_LEVEL_ID === 'level3') {
   mill = buildMillValley(terrain, water);
   scene.add(mill.group);
@@ -244,7 +248,10 @@ if (ACTIVE_LEVEL_ID === 'level3') {
   player.walkHeight = waterfallCave.walkHeight;
   scene.add(waterfallCave.group);
 } else {
-  scene.add(buildMawganSurround(terrain));
+  coastalSurround=buildMawganSurround(terrain);scene.add(coastalSurround);
+  roadBridge=buildMawganBridge(terrain);
+  scene.add(roadBridge.group);
+  player.walkHeight=roadBridge.walkHeight;
   const village = buildVillage(terrain);
   scene.add(village.group);
   villageDoor = village.door;
@@ -370,6 +377,7 @@ function ensureAudioStarted() {
 
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 if (isTouchDevice) document.body.classList.add('touch');
+installGameTouchPolicy();
 
 let touchDigHeld = false, touchSmoothHeld = false;
 
@@ -380,6 +388,7 @@ const JOY_RADIUS = 54;
 let joystickId = null, joystickCx = 0, joystickCy = 0;
 
 joystickZone.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
   if (joystickId !== null) return;
   joystickId = e.pointerId;
   ensureAudioStarted();
@@ -431,6 +440,7 @@ joystickZone.addEventListener('pointercancel', joystickEnd);
 const digZone = document.getElementById('digZone');
 let lookId = null, lookLastX = 0;
 digZone.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
   if (lookId !== null) return;
   lookId = e.pointerId;
   ensureAudioStarted();
@@ -452,11 +462,7 @@ digZone.addEventListener('pointercancel', lookEnd);
 
 function bindHoldButton(id, onDown, onUp) {
   const el = document.getElementById(id);
-  el.addEventListener('pointerdown', (e) => { e.preventDefault(); ensureAudioStarted(); onDown(); });
-  el.addEventListener('pointerup', (e) => { e.preventDefault(); onUp(); });
-  el.addEventListener('pointercancel', onUp);
-  el.addEventListener('pointerleave', onUp);
-  return el;
+  return bindPointerHold(el,()=>{ensureAudioStarted();onDown();},onUp);
 }
 const digBtnEl = document.getElementById('digBtn');
 const smoothBtnEl = document.getElementById('smoothBtn');
@@ -481,19 +487,19 @@ interactBtn.addEventListener('pointerdown', (e) => {
 // Hold-to-sprint, on top of the joystick's own push-further-to-run.
 const sprintBtn = document.getElementById('sprintBtn');
 let sprintHeld = false;
-sprintBtn.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
+bindPointerHold(sprintBtn, () => {
   sprintHeld = true;
   sprintBtn.classList.add('active');
-});
-function sprintRelease(e) {
-  e.preventDefault();
+}, () => {
   sprintHeld = false;
   sprintBtn.classList.remove('active');
+});
+function clearTouchState(){
+  joystickId=null;lookId=null;touch.x=touch.y=0;touch.run=false;
+  joystickBase.style.display=joystickThumb.style.display='none';keys.clear();
 }
-sprintBtn.addEventListener('pointerup', sprintRelease);
-sprintBtn.addEventListener('pointercancel', sprintRelease);
-sprintBtn.addEventListener('pointerleave', sprintRelease);
+window.addEventListener('blur',clearTouchState);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTouchState();});
 
 document.getElementById('zoomInBtn').addEventListener('pointerdown', (e) => {
   e.preventDefault();
@@ -506,16 +512,16 @@ document.getElementById('zoomOutBtn').addEventListener('pointerdown', (e) => {
 
 // ---------- camera controller ----------
 
-const DEFAULT_DIST = ACTIVE_LEVEL_ID === 'level3' ? 64 : 38;
+const DEFAULT_DIST = ACTIVE_LEVEL_ID === 'level3' ? 64 : (isTouchDevice?23:30);
 const INTRO_START_DIST = 95;
 const INTRO_DURATION = 2.8;
 
-let camYaw = Math.PI;
+let camYaw = .12;
 let overviewMode = false;
 let camDistTarget = DEFAULT_DIST;
 let camDist = INTRO_START_DIST;
 let introTimer = 0;
-const camPitch = THREE.MathUtils.degToRad(46);
+const camPitch = THREE.MathUtils.degToRad(isTouchDevice ? 34 : 42);
 const camLookOffset = new THREE.Vector3(0, 1.1, 0);
 
 function easeInOutCubic(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
@@ -534,11 +540,8 @@ function updateCamera(dt) {
   if (keys.has('BracketLeft')) camYaw += dt * 1.4;
   if (keys.has('BracketRight')) camYaw -= dt * 1.4;
 
-  // gentle auto-orientation behind the subject so the view mostly self-corrects
-  const desired = camSubject.facing + Math.PI;
-  let diff = desired - camYaw;
-  diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-  camYaw += diff * Math.min(1, dt * 0.35);
+  // Keep on-foot heading stable: rotating this camera toward the character
+  // feeds back into camera-relative movement and bends a held joystick path.
 
   if (introTimer < INTRO_DURATION) {
     introTimer += dt;
@@ -969,10 +972,10 @@ function handleVehicleEvents(result, dt) {
 // deliberately small: the terrain mesh only has a vertex every ~0.82m, so this is
 // close to the smallest footprint that still spans enough vertices to show an
 // actual oval shape rather than a single point poked down.
-const DIG_LEN = 0.85, DIG_WID = 0.55;
-const PILE_LEN = 0.7, PILE_WID = 0.5;
+const DIG_LEN = 1.05, DIG_WID = 0.85;
+const PILE_LEN = .95, PILE_WID = .75;
 const STROKE_INTERVAL = 0.4; // seconds per scoop - matches the shovel-swing animation
-const STROKE_AMOUNT = 0.22;  // height-units of material moved per scoop
+const STROKE_AMOUNT = 0.28;  // height-units of material moved per scoop
 
 let strokeAccum = 0;
 // The mouse path aims by raycasting onto the terrain - fine for a single click, but
@@ -985,16 +988,22 @@ let strokeAccum = 0;
 // once per hold (mouse press to release) instead of re-raycasting every frame -
 // "digging in the location you specified" means the location doesn't move on its own.
 let lockedDigTarget = null;
+const shovelAim=new THREE.Mesh(new THREE.RingGeometry(.39,.43,40),new THREE.MeshBasicMaterial({color:'#e9e9c1',transparent:true,opacity:.8,depthWrite:false,side:THREE.DoubleSide}));
+shovelAim.rotation.x=-Math.PI/2;shovelAim.renderOrder=3;scene.add(shovelAim);
 function updateShovel(dt) {
   const carrying = !!player.carriedRock;
   const usingMouse = (mouse.left || mouse.right) && !carrying;
   const wantsDig = (mouse.left || touchDigHeld) && !carrying;
   const wantsFlatten = (mouse.right || touchSmoothHeld) && !carrying;
+  const aim=player.aheadPoint(1.15);
+  shovelAim.visible=isTouchDevice&&!carrying&&!overviewMode;
+  shovelAim.position.set(aim.x,terrain.sampleHeightBilinear(aim.x,aim.z)+.055,aim.z);
+  shovelAim.material.opacity=wantsDig?.95:.5;
 
   if (wantsDig || wantsFlatten) {
     let target;
     if (!usingMouse) {
-      target = player.aheadPoint(player.reach * 0.85);
+      target = aim;
     } else if (wantsDig) {
       if (!lockedDigTarget) lockedDigTarget = getShovelTarget();
       target = lockedDigTarget;
@@ -1006,6 +1015,7 @@ function updateShovel(dt) {
       if (usingMouse) player.facing = Math.atan2(target.x - player.pos.x, target.z - player.pos.z);
 
       if (wantsDig) {
+        if(player.state!=='dig-active')strokeAccum=STROKE_INTERVAL;
         player.startDig();
         strokeAccum += dt;
         if (strokeAccum >= STROKE_INTERVAL) {
@@ -1082,7 +1092,7 @@ const hints = {
     pushRock: null,
     tideRise: null,
   } : {
-    intro: 'A shovel. A stream finding its way to the sea. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
+    intro: isTouchDevice?'Left thumb to move. Drag the right side to look. Hold Dig at the ring; move while holding to cut a channel.':'A shovel. A stream finding its way to the sea. Left click to dig, right click to smooth. Rocks can be pushed, or carried with E.',
     dig: 'Keep holding to keep digging - each scoop piles up right next to the hole.',
     pickUp: 'Carry it to the water. E to set it down.',
     putDown: null,
@@ -1390,6 +1400,7 @@ function stepFrame(dt, elapsedTime) {
   water.update(dt, terrain);
   if (mill) mill.update(dt);
   terrain.update(dt);
+  coastalSurround?.userData.syncBoundary();
   if(beachScenery)beachScenery.userData.updateScenery();
   particles.update(dt);
   debris.update(dt, elapsedTime);
@@ -1446,12 +1457,12 @@ window.__game = {
   levelId: ACTIVE_LEVEL_ID,
   setTouchDig: (v) => { touchDigHeld = v; },
   debug: () => ({
-    camDist, camDistTarget, introTimer, clockElapsed: clock.elapsedTime,
+    camDist, camDistTarget, camYaw, introTimer, clockElapsed: clock.elapsedTime,
     mouseLeft: mouse.left, mouseRight: mouse.right, mouseNdc: [mouse.ndcX, mouse.ndcY],
     touchDigHeld, touchSmoothHeld,
     drivingVehicle: drivingVehicle ? { type: drivingVehicle.type, x: drivingVehicle.pos.x, z: drivingVehicle.pos.z, facing: drivingVehicle.facing, speed: drivingVehicle.speed } : null,
     vehicles: vehicles.map((v) => ({ type: v.type, x: v.pos.x, z: v.pos.z, occupied: v.occupied })),
-    villageDoor, waterfallCave, doorPopupShown,
+    villageDoor, waterfallCave, roadBridge:roadBridge?{center:roadBridge.center,deck:roadBridge.deck,axis:roadBridge.axis,span:roadBridge.span,ramp:roadBridge.ramp,width:roadBridge.width}:null, doorPopupShown,
   }),
   setZoom: (d) => { camDistTarget = d; camDist = d; introTimer = INTRO_DURATION; },
   saveNow: doSave,

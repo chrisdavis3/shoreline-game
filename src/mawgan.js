@@ -1,7 +1,8 @@
 // Reference-led, compressed Mawgan Porth landscape. x: north -> south;
-// z: village -> Atlantic. Control points follow the user's aerial comparison.
+// z: village -> Atlantic. Ground elevations are sampled from EA LiDAR.
 // The full landscape and the playable bed share this profile: no box-wall skirt.
-import { Noise2D } from './noise.js?v=112';
+import { elevationGrid,elevationCm } from './mawgan-elevation.js?v=113';
+import { Noise2D } from './noise.js?v=113';
 const noise = new Noise2D(5827);
 const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
 const smooth = (a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
@@ -14,55 +15,41 @@ function profile(points,z) {
   }
   return points.at(-1)[1];
 }
-// Distinct headlands flank sand which opens out toward the sea. The south
-// side leaves a low river/road approach, rather than a tall cliff at the inlet.
-const north = [[-100,28],[-20,34],[0,32],[18,28],[35,22],[52,15],[70,6],[85,0],[98,-14],[112,-65]];
-const south = [[-100,119],[-20,111],[0,110],[20,113],[38,111],[55,114],[73,112],[86,114],[99,129],[112,175]];
-export function bayEdges(z) {
-  const r=noise.fbm(z*.14,12,2);
-  return [profile(north,z)+r*1.9+noise.fbm(z*.045,83,2)*2.8,profile(south,z)+r*1.5+noise.fbm(z*.06,124,2)*2.3];
+// The bay is now sampled from Environment Agency ground elevations. These
+// boundary summaries guide material hardness only; they do not create the hills.
+const north=[[-100,60],[0,70.5],[15,69.7],[20,67.2],[30,43.5],[40,29.5],[50,17.2],[60,13.1],[70,5.7],[80,-1.6],[95,-4.9],[110,-9],[150,-30]];
+const south=[[-100,125],[0,100.9],[15,93.5],[20,91],[30,86.1],[40,82],[50,73.8],[60,70.5],[70,77.9],[80,86.1],[95,110.7],[110,112.3],[150,190]];
+export function bayEdges(z){return [profile(north,z),profile(south,z)];}
+export function surveyedHeight(x,z){
+  const g=elevationGrid,fx=clamp((x-g.x0)/g.step,0,g.nx-1),fz=clamp((z-g.z0)/g.step,0,g.nz-1);
+  const i=Math.min(g.nx-2,Math.floor(fx)),j=Math.min(g.nz-2,Math.floor(fz)),u=fx-i,v=fz-j,k=j*g.nx+i;
+  return ((elevationCm[k]*(1-u)+elevationCm[k+1]*u)*(1-v)+(elevationCm[k+g.nx]*(1-u)+elevationCm[k+g.nx+1]*u)*v)/100;
 }
-export function mawganStream(z) {
-  return profile([[-100,102],[0,101],[14,101.5],[29,98.5],[44,100],[61,98],[77,94],[95,91],[140,89]],z);
+// Mapped Menalhyl to its beach outlet, then an authored tidal-sand reach along
+// the surveyed southern foot of the bay. The beach channel migrates in reality.
+export function mawganStream(z){
+  return profile([[-100,117],[-44,92.95],[-24,88.69],[-4.68,88],[3.23,89.34],[8.8,90.74],[12.3,90.89],[14.79,90.12],[17.28,88.43],[17.91,87.66],[20.64,84.95],[30,80],[40,76],[50,68],[60,65],[70,72],[80,79],[95,89],[140,94]],z);
 }
-export function mawganHeight(x,z) {
-  const [left,right]=bayEdges(z);
-  const margin=Math.max(left-x,x-right);
-  const rock=smooth(-1,5,margin)*smooth(-12,35,z);
-  const seaFade=1-smooth(93,122,z);
-  const broad=noise.fbm(x*.024,z*.024,3);
-  const crag=noise.fbm(x*.24,z*.18,2);
-  const northSide=x<(left+right)*.5;
-  const plateau=(northSide?10:9)+broad*1.8+Math.sin(z*.045)*.8;
-  const coastHeight=(plateau+crag*.9*smooth(-1,4,margin))*seaFade;
-  const beach=(83+4*Math.cos((x-57)/65*Math.PI*.5)-z)*.047 + noise.fbm(x*.13,z*.12,2)*.08;
-  const duneZ=profile([[0,30],[25,26],[50,21],[75,17],[105,10],[150,0]],x);
-  const inland=smooth(duneZ+9,duneZ-3,z);
-  const valley=1-smooth(8,32,Math.abs(x-mawganStream(z)));
-  const hinterland=3.8+(1-valley)*(8+broad*4)*smooth(20,-55,z);
-  const dune=.9*Math.exp(-Math.pow((z-duneZ)/4,2))*(1-valley*.8);
-  let h=beach*(1-inland)+hinterland*inland+dune;
-  h=h*(1-rock)+coastHeight*rock;
-  if(z>100)h=Math.min(h,-1-(z-100)*.1+coastHeight*rock);
-  // A continuously descending bed; no row-wise corrective cliffs are needed.
-  const d=Math.abs(x-mawganStream(z));
-  const channel=1-smooth(1.1,3.2,d);
-  const channelBed=2.35-z*.043;
+export function mawganHeight(x,z){
+  const real=surveyedHeight(x,z);
+  let h=real*.22; // horizontal scale .15; mild vertical exaggeration for legibility
+  // LiDAR describes exposed land, not bathymetry. Continue low/void offshore
+  // samples into a shallow authored seabed so low tide does not reveal a shelf.
+  h+=Math.min(0,(75-z)*.035)*(1-smooth(.1,1.2,real));
+  const d=Math.abs(x-mawganStream(z)),channel=1-smooth(1.0,2.4,d);
+  const channelBed=.85-z*.022;
   if(z<103)h=h*(1-channel)+Math.min(h,channelBed)*channel;
   return h;
 }
-export function mawganHardness(x,z) {
-  const [a,b]=bayEdges(z);
-  return .08+.9*smooth(-2,0,Math.max(a-x,x-b));
+export function mawganHardness(x,z){
+  // Inland turf/river banks must not slump like the beach's loose sand.
+  return Math.max(.92*(1-smooth(18,27,z)),.08+.9*smooth(1.5,4.5,mawganHeight(x,z)));
 }
-export function mawganColour(x,z,h,slope,wet=0,disturbed=0) {
-  const [a,b]=bayEdges(z);
-  const margin=Math.max(a-x,x-b);
-  const inland=1-smooth(12,33,z);
-  const top=smooth(5.5,8.5,h)*(1-smooth(.32,1.1,slope));
-  const grass=Math.max(inland*(1-smooth(.4,1.4,slope)),top);
-  const stone=Math.max(smooth(-2,1,margin),smooth(.6,1.2,slope)*smooth(4,8,h))*(1-grass);
+export function mawganColour(x,z,h,slope,wet=0,disturbed=0){
+  const inland=1-smooth(14,26,z),high=smooth(2.0,4.0,h);
+  const grass=Math.max(inland,high)*(1-smooth(.5,1.5,slope));
+  const stone=smooth(.45,1.2,slope)*smooth(1.2,3.5,h)*(1-grass);
   const n=noise.fbm(x*.12,z*.1,2)*.5+.5;
-  const sand=[.69,.57,.37], turf=[.16+n*.09,.23+n*.09,.08+n*.035], slate=[.065+n*.045,.075+n*.045,.08+n*.045];
+  const sand=[.69,.57,.37],turf=[.14+n*.08,.23+n*.09,.085+n*.035],slate=[.06+n*.045,.075+n*.045,.085+n*.045];
   return sand.map((v,i)=>((v*(1-grass)+turf[i]*grass)*(1-stone)+slate[i]*stone)*(1-clamp(wet,0,1)*.32)*(1-disturbed*.14));
 }

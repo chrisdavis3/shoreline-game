@@ -1,10 +1,10 @@
-import { CAVE_X,CAVE_BACK,CAVE_MOUTH } from './hidden-cave.js?v=112';
+import { CAVE_X,CAVE_BACK,CAVE_MOUTH } from './hidden-cave.js?v=113';
 import * as THREE from '../vendor/three.module.js';
 import {
   GRID, CELL, SIZE, streamCenterX, coastT, warpX,
   getActiveLevel, L2_LIP_X, L2_T_FALL0, L2_T_FALL1, L2_TOP_H,
   L2_LAKE_CENTER_Z, L2_LAKE_RADIUS_X, L2_LAKE_RADIUS_Z,
-} from './terrain.js?v=112';
+} from './terrain.js?v=113';
 
 // A shallow-water "virtual pipes" style grid simulation: cheap, stable, and
 // visually convincing rather than physically exact. Water flows downhill
@@ -60,16 +60,14 @@ export class WaterSim {
     this.fU = new Float32Array(N * N);
     this.fD = new Float32Array(N * N);
 
-    this.tideLevel = 0.4;
-    this.tidePhase = Math.random() * Math.PI * 2;
+    this.tideLevel = getActiveLevel()==='level1'?.05:.4;
+    this.tidePhase = getActiveLevel()==='level1'?Math.PI:Math.random() * Math.PI * 2;
     this.tidePeriod = 260; // seconds for a full tidal cycle - slow enough to notice, fast enough to see in one session
-    this.tideRange = 1.9;  // metres of vertical rise/fall
-    // Waterfall source inflow rate (depth/second at each source cell) - see
-    // _seedSource/_step. Level 1's own 0.34 stays a literal inline constant in
-    // _step (untouched); this is a SEPARATE, level-gated value so level 2's
-    // single concentrated source can feed at a different rate without
-    // changing level 1's tuned number at all.
-    this._sourceRate = 0.34;
+    this.tideRange = getActiveLevel()==='level1'?1.3:1.9;
+    // Inflow depth per second at each source cell. The measured beach valley
+    // needs a gentler river than the previous wide procedural trough; the
+    // gorge and mill retain their own rates below.
+    this._sourceRate = getActiveLevel()==='level1' ? .06 : .34;
     if (getActiveLevel() === 'level3') {
       this.tideLevel = 0.8;
       this.tideRange = 0;
@@ -172,7 +170,10 @@ export class WaterSim {
         if (terrain.blocked[k]) continue;
         const d = Math.abs(i - ci);
         const falloff = Math.exp(-Math.pow(d / width, 2));
-        const target = 0.1 * falloff;
+        // Seepage fills the river, not a water film over its sloping banks or
+        // nearby roads. Level 1's surveyed valley is not the old analytic trough.
+        const bankLimit=getActiveLevel()==='level1' ? Math.max(0,terrain.sampleHeightBilinear(streamCenterX(z),z)+.16-terrain.height[k]) : Infinity;
+        const target = Math.min(0.1 * falloff,bankLimit);
         row.push({ k, target });
         this.depth[k] = Math.max(this.depth[k], target);
       }

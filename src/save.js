@@ -4,7 +4,7 @@
 // touches terrain/water/rock CLASS internals - only reads/writes their already-
 // public typed arrays and scalar fields, so this stays independent of whatever
 // else is changing inside those files.
-import { terrainVersionFor } from './terrain.js?v=112';
+import { terrainVersionFor } from './terrain.js?v=113';
 
 // Each level gets its own independent save slot, keyed by level id, so
 // progress in one never overwrites the other. The rebuilt beach writes to a
@@ -75,7 +75,14 @@ export function saveState({ terrain, water, rocks, player, vehicles, levelId = '
 
 export function loadSavedData(levelId = 'level1') {
   try {
-    const raw = localStorage.getItem(activeKey(levelId)) || localStorage.getItem(keyFor(levelId));
+    let raw=localStorage.getItem(activeKey(levelId));
+    let versioned=!!raw;
+    if(!raw && levelId==='level1'){
+      for(let v=terrainVersionFor(levelId)-1;v>=8&&!raw;v--){
+        raw=localStorage.getItem(keyFor(levelId)+'_terrain_'+v);versioned=!!raw;
+      }
+    }
+    raw ||= localStorage.getItem(keyFor(levelId));
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (data.v !== SCHEMA_VERSION) return null; // don't try to apply an incompatible shape
@@ -90,7 +97,9 @@ export function loadSavedData(levelId = 'level1') {
       // Preserve the original earthworks before a changed landscape starts a
       // fresh save. A later autosave must never erase the only old copy.
       const backup = keyFor(levelId) + '_terrain_' + data.terrainV + '_backup';
-      if (!localStorage.getItem(backup)) localStorage.setItem(backup, raw);
+      // A versioned source is already a separate preserved slot; avoid another
+      // full snapshot copy consuming the browser's limited storage quota.
+      if (!versioned && !localStorage.getItem(backup)) localStorage.setItem(backup, raw);
       return null;
     }
     return data;

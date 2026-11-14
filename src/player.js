@@ -1,13 +1,13 @@
 import * as THREE from '../vendor/three.module.js';
-import { warpX } from './terrain.js?v=112';
+import { warpX } from './terrain.js?v=113';
 
 // A toddler in a brown bear hoody with a cream hood + ears, and striped shorts -
-// modelled after a real beach photo rather than the generic adult silhouette this
-// started as.
-const SKIN = '#e2b18c';
-const HOODY = '#5b4130';     // brown fleece body
+// described in the user's reference relay. The latest photo is not available
+// in this desktop session; do not claim a verified photographic likeness.
+const SKIN = '#efc4ad';
+const HOODY = '#49392d';     // brown fleece body
 const HOODY_DARK = '#463323';
-const HOOD_CREAM = '#e7ddc8'; // fuzzy cream/white hood + ears
+const HOOD_CREAM = '#eee3d0'; // fuzzy cream/white hood + ears
 const SHORTS_NAVY = '#33465a';
 const SHORTS_RUST = '#a15a3a';
 
@@ -16,7 +16,7 @@ function buildCharacter() {
 
   const hoodyMat = new THREE.MeshStandardMaterial({ color: HOODY, roughness: 0.88 });
   const hoodyDarkMat = new THREE.MeshStandardMaterial({ color: HOODY_DARK, roughness: 0.88 });
-  const hoodMat = new THREE.MeshStandardMaterial({ color: HOOD_CREAM, roughness: 0.95 });
+  const hoodMat = new THREE.MeshStandardMaterial({ color: HOOD_CREAM, roughness: 0.95, side: THREE.DoubleSide });
   const skinMat = new THREE.MeshStandardMaterial({ color: SKIN, roughness: 0.7 });
   const navyMat = new THREE.MeshStandardMaterial({ color: SHORTS_NAVY, roughness: 0.85 });
   const rustMat = new THREE.MeshStandardMaterial({ color: SHORTS_RUST, roughness: 0.85 });
@@ -30,21 +30,22 @@ function buildCharacter() {
   hips.position.y = 0.254;
   group.add(hips);
 
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.155, 0.16, 4, 8), hoodyMat);
-  torso.position.y = 0.22;
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.165, 0.075, 8, 20), hoodyMat);
+  torso.position.y = 0.275;
   torso.castShadow = true;
   hips.add(torso);
 
   // Striped shorts poking out below the hoody, over bare thighs.
   const shortsGroup = new THREE.Group();
-  shortsGroup.position.y = 0.09;
+  shortsGroup.position.y = 0.025;
   hips.add(shortsGroup);
   const shortsColors = [rustMat, navyMat, rustMat];
   for (let i = 0; i < shortsColors.length; i++) {
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.045, 12), shortsColors[i]);
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.079, 0.045, 12), shortsColors[i]);
     band.position.y = 0.05 - i * 0.045;
     band.castShadow = true;
-    shortsGroup.add(band);
+    band.position.x=-.082;shortsGroup.add(band);
+    const other=band.clone();other.position.x=.082;shortsGroup.add(other);
   }
 
   const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 0.05, 8), skinMat);
@@ -52,40 +53,59 @@ function buildCharacter() {
   hips.add(neck);
 
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 14), skinMat);
-  head.scale.set(0.94, 1.0, 0.96);
+  head.scale.set(1.0, .97, .9);
   head.position.y = 0.53;
   head.castShadow = true;
   hips.add(head);
 
-  // A simple kid's face: two dot eyes, rosy cheeks, a small smile.
+  // A small, round face, with understated eyes and mouth.
   const eyeMat = new THREE.MeshStandardMaterial({ color: '#2a2320', roughness: 0.5 });
-  const cheekMat = new THREE.MeshStandardMaterial({ color: '#e8927a', roughness: 0.8 });
   const mouthMat = new THREE.MeshStandardMaterial({ color: '#b05a4a', roughness: 0.7 });
   for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 8), eyeMat);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.010, 12, 8), eyeMat);
+    eye.scale.set(1.05,.8,.55);
     eye.position.set(side * 0.058, 0.545, 0.148);
     hips.add(eye);
-    const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), cheekMat);
-    cheek.scale.set(1, 0.7, 0.4);
-    cheek.position.set(side * 0.09, 0.5, 0.12);
-    hips.add(cheek);
+
   }
   const mouth = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 8), mouthMat);
-  mouth.scale.set(1.4, 0.7, 0.5);
+  mouth.scale.set(.9, .32, .25);
   mouth.position.set(0, 0.5, 0.155);
   hips.add(mouth);
 
-  // Bear hood: a cream cap over the crown (theta kept shallow so the face stays
-  // clear) plus two small rounded ears.
-  const hood = new THREE.Mesh(new THREE.SphereGeometry(0.195, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52), hoodMat);
-  hood.position.y = 0.565;
-  hood.castShadow = true;
-  hips.add(hood);
-  for (const side of [-1, 1]) {
-    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), hoodMat);
-    ear.position.set(side * 0.1, 0.71, 0.02);
-    hips.add(ear);
+  const nose=new THREE.Mesh(new THREE.SphereGeometry(.016,12,10),skinMat);
+  nose.scale.set(.8,.8,1);nose.position.set(0,.527,.153);hips.add(nose);
+  // The hood's face opening joins its back shell continuously. A detached torus
+  // rim left a visible air gap beside the cheeks in oblique views.
+  const hood=new THREE.Mesh(new THREE.SphereGeometry(.208,24,18,Math.PI,Math.PI),hoodMat);
+  hood.position.set(0,.55,-.015);hood.scale.y=1.09;hood.castShadow=true;hips.add(hood);
+  const hoodVertices=[],hoodIndices=[];
+  for(let j=0;j<=6;j++)for(let i=0;i<=48;i++){
+    const a=i/48*Math.PI*2,t=j/6,bulge=Math.sin(t*Math.PI)*.009;
+    hoodVertices.push(Math.cos(a)*(.162+.046*t+bulge),.55+Math.sin(a)*(.183+.04372*t+bulge),.105-.12*t);
+    if(j<6&&i<48){const k=j*49+i;hoodIndices.push(k,k+49,k+1,k+1,k+49,k+50);}
   }
+  const hoodGeo=new THREE.BufferGeometry();hoodGeo.setAttribute('position',new THREE.Float32BufferAttribute(hoodVertices,3));hoodGeo.setIndex(hoodIndices);hoodGeo.computeVertexNormals();
+  const rim=new THREE.Mesh(hoodGeo,hoodMat);rim.castShadow=true;hips.add(rim);
+  const earInner=new THREE.MeshStandardMaterial({color:'#cdbb9c',roughness:1});
+  for(const side of [-1,1]){
+    const ear=new THREE.Mesh(new THREE.SphereGeometry(.057,14,10),hoodMat);
+    ear.position.set(side*.136,.756,-.008);ear.scale.set(1,1,.65);ear.castShadow=true;hips.add(ear);
+    const pad=new THREE.Mesh(new THREE.SphereGeometry(.034,12,8),earInner);
+    pad.position.copy(ear.position);pad.position.z+=.036;pad.scale.z=.2;hips.add(pad);
+  }
+  const hairMat=new THREE.MeshStandardMaterial({color:'#9c693f',roughness:.96});
+  // One curved cap with a softly irregular fringe, rather than rigid hair rods.
+  const hairGeo=new THREE.SphereGeometry(.174,48,20,0,Math.PI*2,0,1);
+  const hairPositions=hairGeo.attributes.position;
+  for(let j=0;j<=20;j++)for(let i=0;i<=48;i++){
+    const phi=i/48*Math.PI*2,front=Math.max(0,Math.sin(phi));
+    const edge=1.65-.58*front+front*(.035*Math.sin(phi*18)+.024*Math.sin(phi*31));
+    const theta=j/20*edge;
+    hairPositions.setXYZ(j*49+i,-.174*Math.cos(phi)*Math.sin(theta),.174*Math.cos(theta),.157*Math.sin(phi)*Math.sin(theta));
+  }
+  hairGeo.computeVertexNormals();
+  const crown=new THREE.Mesh(hairGeo,hairMat);crown.position.set(0,.53,.003);crown.castShadow=true;hips.add(crown);
 
   function makeLimb(mat, len, rad) {
     const pivot = new THREE.Group();
@@ -96,10 +116,10 @@ function buildCharacter() {
     return { pivot, mesh };
   }
 
-  const armL = makeLimb(hoodyMat, 0.15, 0.042);
+  const armL = makeLimb(hoodyMat, 0.15, 0.062);
   armL.pivot.position.set(0.175, 0.32, 0);
   hips.add(armL.pivot);
-  const armR = makeLimb(hoodyMat, 0.15, 0.042);
+  const armR = makeLimb(hoodyMat, 0.15, 0.062);
   armR.pivot.position.set(-0.175, 0.32, 0);
   hips.add(armR.pivot);
 
@@ -176,7 +196,7 @@ export class Player {
     built.handR.add(this.shovel);
 
     this.pos = new THREE.Vector3(0, 0, 0);
-    this.facing = Math.PI;
+    this.facing = 0;
     this.velocity = new THREE.Vector3();
     this.speed = 0;
     this.state = 'idle';
@@ -212,17 +232,12 @@ export class Player {
     const moving = move.lengthSq() > 0.0001;
     const running = input.run && moving;
 
-    const maxSpeed = running ? 6.0 : 2.5; // sprint +30% (was 4.6)
+    const maxSpeed = this.state==='dig-active'?1.25:(running ? 5.0 : 2.5);
     const accel = 14;
     const targetVel = move.clone().multiplyScalar(maxSpeed);
 
-    const canMove = this.state !== 'dig-active';
-    if (canMove) {
-      this.velocity.x += (targetVel.x - this.velocity.x) * Math.min(1, accel * dt);
-      this.velocity.z += (targetVel.z - this.velocity.z) * Math.min(1, accel * dt);
-    } else {
-      this.velocity.multiplyScalar(0.8);
-    }
+    this.velocity.x += (targetVel.x - this.velocity.x) * Math.min(1, accel * dt);
+    this.velocity.z += (targetVel.z - this.velocity.z) * Math.min(1, accel * dt);
 
     // slope resistance: slow down on steep ground
     const nx = this.pos.x, nz = this.pos.z;
@@ -244,7 +259,7 @@ export class Player {
 
     this.speed = Math.sqrt(this.velocity.x ** 2 + this.velocity.z ** 2);
 
-    if (moving && this.state !== 'dig-active') {
+    if (moving) {
       const targetFacing = Math.atan2(move.x, move.z);
       let diff = targetFacing - this.facing;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
@@ -257,7 +272,7 @@ export class Player {
     this.mesh.rotation.y = this.facing;
 
     // footstep events
-    if (this.speed > 0.3 && this.state !== 'dig-active') {
+    if (this.speed > 0.3) {
       this.walkCycle += dt * (this.speed * 2.1 + 1.5);
       this.footstepAccum += dt * (this.speed * 1.4 + 0.6);
       if (this.footstepAccum > 1) {
@@ -276,12 +291,13 @@ export class Player {
     if (this.state === 'dig-active') {
       this.digTimer += dt;
       const t = this.digTimer;
-      const swing = Math.sin(t * 5.2);
+      const swing = Math.sin(t * Math.PI * 2 / .4);
       p.armR.pivot.rotation.x = -1.9 + swing * 0.55;
       p.armL.pivot.rotation.x = -0.5 + swing * 0.2;
       p.hips.rotation.x = 0.28 + Math.max(0, swing) * 0.08;
-      p.legL.pivot.rotation.x = -0.1;
-      p.legR.pivot.rotation.x = 0.1;
+      const step=Math.sin(this.walkCycle)*Math.min(.45,this.speed*.35);
+      p.legL.pivot.rotation.x = -.1+step;
+      p.legR.pivot.rotation.x = .1-step;
       return;
     }
     if (this.state === 'carry') {
@@ -317,6 +333,7 @@ export class Player {
   }
 
   startDig() {
+    if(this.state==='dig-active')return;
     this.state = 'dig-active';
     this.digTimer = 0;
   }

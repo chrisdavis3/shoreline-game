@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { mappedRoads } from './mawgan-map.js?v=112';
+import { mappedRoads } from './mawgan-map.js?v=113';
 
 // Project a small static road mask onto the live ground. Separate ribbons
 // intersected the terrain as erosion changed its height beneath them.
@@ -8,7 +8,7 @@ function roadMask() {
   if(roadTexture)return roadTexture;
   const size=1024,origin=-130,extent=370,data=new Uint8Array(size*size*4),pixel=extent/size;
   for(const road of mappedRoads){
-    const foot=['footway','path'].includes(road.kind),width=foot?.28:road.kind==='service'?.85:1.65;
+    const foot=['footway','path'].includes(road.kind),width=foot?.28:road.kind==='service'?.7:road.kind==='secondary'?1.35:1.1;
     for(let k=1;k<road.points.length;k++){
       const [ax,az]=road.points[k-1],[bx,bz]=road.points[k],dx=bx-ax,dz=bz-az,len2=dx*dx+dz*dz;
       if(!len2||len2>10000)continue;

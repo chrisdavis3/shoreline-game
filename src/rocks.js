@@ -1,6 +1,7 @@
 import * as THREE from '../vendor/three.module.js';
-import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=112';
-import { Noise2D } from './noise.js?v=112';
+import {roadOverlapsFootprint} from './mawgan-roads.js?v=113';
+import { GRID, CELL, SIZE, streamCenterX, warpX, getActiveLevel, L2_T_FALL1 } from './terrain.js?v=113';
+import { Noise2D } from './noise.js?v=113';
 
 const rn = new Noise2D(777);
 
@@ -127,6 +128,7 @@ export function scatterRocks(terrain, scene, count = 46) {
     let size = 'small';
     if (roll > 0.82) size = 'large';
     else if (roll > 0.5) size = 'medium';
+    if(getActiveLevel()==='level1' && (z<25 || roadOverlapsFootprint(x,z,size==='large'?3.6:2.0,size==='large'?3.6:2.0)))continue;
 
     // Small rocks never block flow (they're pickup-only, see Rock._applyBlockedMask),
     // so they can sit anywhere including right in the stream. Medium/large rocks DO

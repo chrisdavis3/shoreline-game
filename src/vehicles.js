@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.js';
-import { SIZE, warpX } from './terrain.js?v=112';
+import { SIZE, warpX } from './terrain.js?v=113';
 
 // Drivable construction vehicles: a bulldozer (blade grading) and an excavator
 // (fixed-reach bucket digging, independently-rotating cab). Deliberately
